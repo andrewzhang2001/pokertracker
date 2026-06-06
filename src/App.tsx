@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { computeHandState } from './lib/computeHandState'
 import type { ParsedHand } from './lib/types'
@@ -14,11 +14,6 @@ export default function App() {
 
   const hand = hands[handIndex] ?? null
 
-  // Reset step when hand changes
-  useEffect(() => {
-    if (hand) setStepIndex(hand.initialStep)
-  }, [handIndex, hand])
-
   const state = useMemo(
     () => (hand ? computeHandState(hand, stepIndex) : null),
     [hand, stepIndex],
@@ -32,30 +27,33 @@ export default function App() {
       setError(null)
       setHands(parsed)
       setHandIndex(0)
+      setStepIndex(parsed[0].initialStep)
     }
   }
 
+  // Both hand index and step update atomically to avoid mid-render flicker
   function goHand(delta: number) {
-    setHandIndex(i => Math.max(0, Math.min(hands.length - 1, i + delta)))
+    const next = Math.max(0, Math.min(hands.length - 1, handIndex + delta))
+    if (next === handIndex) return
+    setHandIndex(next)
+    setStepIndex(hands[next].initialStep)
   }
 
-  function goStep(delta: number) {
+  const goStep = useCallback((delta: number) => {
     if (!hand) return
     setStepIndex(i => Math.max(-1, Math.min(hand.actions.length - 1, i + delta)))
-  }
+  }, [hand])
 
-  // Keyboard navigation
+  // Keyboard navigation — stable closure via useCallback refs
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLTextAreaElement) return
       if (e.key === 'ArrowRight') goStep(1)
       else if (e.key === 'ArrowLeft') goStep(-1)
-      else if (e.key === 'ArrowUp') goHand(-1)
-      else if (e.key === 'ArrowDown') goHand(1)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+  }, [goStep])
 
   if (!hands.length) {
     return (

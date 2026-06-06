@@ -152,10 +152,15 @@ function parseHand(text: string): ParsedHand | null {
   }
   if (!players.length) return null
 
-  // Determine BB from the big blind posting line
+  // Determine BB from the blind posting action line specifically.
+  // Must match the ACTION text (after " : ") to avoid matching
+  // "Big Blind : Ante chip 5" which would give the wrong number.
   let bigBlind = 1
   for (let j = i; j < lines.length; j++) {
-    const m = lines[j].match(/Big blind[^\d]*\$?([\d,]+)/i)
+    const ci = lines[j].indexOf(' : ')
+    if (ci === -1) continue
+    const actionText = lines[j].slice(ci + 3).trim()
+    const m = actionText.match(/^Big blind \$?([\d,]+)/i)
     if (m) { bigBlind = parseAmt(m[1]); break }
   }
 
