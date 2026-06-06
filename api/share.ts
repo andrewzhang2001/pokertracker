@@ -2,7 +2,10 @@ import { Redis } from '@upstash/redis'
 
 export const config = { runtime: 'edge' }
 
-const redis = Redis.fromEnv()
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+})
 
 function randomId(): string {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
