@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { computeHandState } from './lib/computeHandState'
+import { encodeShare, decodeShare } from './lib/shareUrl'
 import type { ParsedHand } from './lib/types'
 import PokerTable from './components/PokerTable'
 
@@ -11,6 +12,9 @@ export default function App() {
   const [showOpponentCards, setShowOpponentCards] = useState(true)
   const [pasteText, setPasteText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notes, setNotes] = useState('')
+  const [shareOpen, setShareOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   const hand = hands[handIndex] ?? null
 
@@ -18,6 +22,21 @@ export default function App() {
     () => (hand ? computeHandState(hand, stepIndex) : null),
     [hand, stepIndex],
   )
+
+  // Decode shared link on first load
+  useEffect(() => {
+    const hash = window.location.hash
+    if (!hash.startsWith('#h=')) return
+    decodeShare(hash.slice(3)).then(({ rawText, notes: n }) => {
+      const parsed = parseHandHistories(rawText)
+      if (parsed.length) {
+        setHands(parsed)
+        setHandIndex(0)
+        setStepIndex(parsed[0].initialStep)
+        setNotes(n)
+      }
+    }).catch(() => {})
+  }, [])
 
   function loadText(text: string) {
     const parsed = parseHandHistories(text)
@@ -28,7 +47,16 @@ export default function App() {
       setHands(parsed)
       setHandIndex(0)
       setStepIndex(parsed[0].initialStep)
+      setNotes('')
+      history.replaceState(null, '', window.location.pathname)
     }
+  }
+
+  function resetApp() {
+    setHands([])
+    setPasteText('')
+    setNotes('')
+    history.replaceState(null, '', window.location.pathname)
   }
 
   const goHand = useCallback((delta: number) => {
@@ -43,10 +71,11 @@ export default function App() {
     setStepIndex(i => Math.max(-1, Math.min(hand.actions.length - 1, i + delta)))
   }, [hand])
 
-  // Keyboard navigation — stable closure via useCallback refs
+  // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLTextAreaElement) return
+      if (shareOpen) return
       if (e.key === 'ArrowRight') goStep(1)
       else if (e.key === 'ArrowLeft') goStep(-1)
       else if (e.key === 'ArrowUp') { e.preventDefault(); goHand(-1) }
@@ -54,7 +83,16 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goStep, goHand])
+  }, [goStep, goHand, shareOpen])
+
+  async function copyShareLink() {
+    if (!hand) return
+    const encoded = await encodeShare(hand.rawText, notes)
+    const url = `${window.location.origin}${window.location.pathname}#h=${encoded}`
+    await navigator.clipboard.writeText(url)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   if (!hands.length) {
     return (
@@ -84,11 +122,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Top bar: hand navigation */}
+      {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { setHands([]); setPasteText('') }}
+            onClick={resetApp}
             className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors"
           >
             ← Back
@@ -103,17 +141,32 @@ export default function App() {
           <span className="text-white font-medium">{handIndex + 1} / {hands.length}</span>
           {hand && <span className="text-gray-600 text-xs hidden sm:inline">{hand.date}</span>}
         </div>
-        <button
-          onClick={() => setShowOpponentCards(v => !v)}
-          className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-            showOpponentCards
-              ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10'
-              : 'border-gray-600 text-gray-400'
-          }`}
-        >
-          {showOpponentCards ? 'Cards: on' : 'Cards: off'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowOpponentCards(v => !v)}
+            className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+              showOpponentCards
+                ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10'
+                : 'border-gray-600 text-gray-400'
+            }`}
+          >
+            {showOpponentCards ? 'Cards: on' : 'Cards: off'}
+          </button>
+          <button
+            onClick={() => setShareOpen(true)}
+            className="text-xs px-3 py-1 rounded-full border border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20 transition-colors"
+          >
+            Share
+          </button>
+        </div>
       </div>
+
+      {/* Notes banner */}
+      {notes && (
+        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-800/50 text-yellow-200 text-sm whitespace-pre-wrap max-w-3xl mx-auto w-full">
+          {notes}
+        </div>
+      )}
 
       {/* Table */}
       <div className="flex-1 flex items-center justify-center px-4 py-2">
@@ -124,7 +177,7 @@ export default function App() {
         )}
       </div>
 
-      {/* Bottom bar: step navigation */}
+      {/* Bottom bar */}
       {hand && (
         <div className="border-t border-gray-800 bg-black/50 px-4 py-2">
           <div className="flex items-center gap-3 max-w-3xl mx-auto">
@@ -150,6 +203,41 @@ export default function App() {
             </button>
           </div>
           <p className="text-center text-gray-700 text-xs mt-1">← → to step through actions · ↑ ↓ to change hand</p>
+        </div>
+      )}
+
+      {/* Share modal */}
+      {shareOpen && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+          onClick={e => { if (e.target === e.currentTarget) setShareOpen(false) }}
+        >
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-white font-semibold text-lg">Share hand</h2>
+              <button onClick={() => setShareOpen(false)} className="text-gray-500 hover:text-white text-xl leading-none">✕</button>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-gray-400 text-xs">Notes (optional)</label>
+              <textarea
+                className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-blue-500 resize-none h-32"
+                placeholder="Add analysis, questions, or context..."
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <button
+              onClick={copyShareLink}
+              className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${
+                copied
+                  ? 'bg-green-700 text-green-100'
+                  : 'bg-blue-600 hover:bg-blue-500 text-white'
+              }`}
+            >
+              {copied ? 'Copied!' : 'Copy link'}
+            </button>
+          </div>
         </div>
       )}
     </div>
