@@ -32,6 +32,15 @@ export function computeHandState(hand: ParsedHand, stepIndex: number): HandState
 
     switch (action.type) {
       case 'post_ante':
+        // Antes go to the pot but are NOT part of the preflop betting round,
+        // so they don't count toward streetBet (which is used to calculate
+        // the additional chips needed when raising).
+        if (p && action.amount !== undefined) {
+          p.stack -= action.amount
+          pot += action.amount
+        }
+        break
+
       case 'post_blind':
         if (p && action.amount !== undefined) {
           p.stack -= action.amount
@@ -111,6 +120,9 @@ export function computeHandState(hand: ParsedHand, stepIndex: number): HandState
         break
 
       case 'showdown':
+        // The showdown action shows the full 5-card best hand, not just hole
+        // cards. Hole cards are already set from deal_hole, so don't overwrite.
+        break
       case 'doesnotshow':
         if (p && action.cards) p.holeCards = action.cards
         break

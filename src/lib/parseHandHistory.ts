@@ -45,19 +45,23 @@ function parseActionLine(
     ({ type, seatNumber: sn, amount, cards, street, desc: desc ?? '' })
 
   // Return uncalled bet
-  const retM = act.match(/^Return uncalled portion of bet \$?([\d,]+)/)
+  const retM = act.match(/^Return uncalled portion of bet \$?([\d,.]+)/)
   if (retM) return A('return_bet', parseAmt(retM[1]), undefined, `${name} uncalled bet returned`)
 
-  // Ante
-  const anteM = act.match(/^(?:Ante chip|Posts chip) \$?([\d,]+)/i)
+  // Tournament ante (does NOT count as a street bet)
+  const anteM = act.match(/^Ante chip \$?([\d,.]+)/i)
   if (anteM) return A('post_ante', parseAmt(anteM[1]), undefined, `${name} ante ${bb(parseAmt(anteM[1]), bigBlind)}`)
 
+  // Dead blind / straddle (DOES count as a street bet, same as SB/BB)
+  const postM = act.match(/^Posts chip \$?([\d,.]+)/i)
+  if (postM) return A('post_blind', parseAmt(postM[1]), undefined, `${name} posts ${bb(parseAmt(postM[1]), bigBlind)}`)
+
   // Small blind
-  const sbM = act.match(/^Small blind \$?([\d,]+)/i)
+  const sbM = act.match(/^Small blind \$?([\d,.]+)/i)
   if (sbM) return A('post_blind', parseAmt(sbM[1]), undefined, `${name} posts SB ${bb(parseAmt(sbM[1]), bigBlind)}`)
 
   // Big blind
-  const bbM = act.match(/^Big blind \$?([\d,]+)/i)
+  const bbM = act.match(/^Big blind \$?([\d,.]+)/i)
   if (bbM) return A('post_blind', parseAmt(bbM[1]), undefined, `${name} posts BB ${bb(parseAmt(bbM[1]), bigBlind)}`)
 
   // Hole cards
@@ -71,34 +75,34 @@ function parseActionLine(
   if (/^Checks?/.test(act)) return A('check', undefined, undefined, `${name} checks`)
 
   // Call / Calls
-  const callM = act.match(/^Calls? \$?([\d,]+)/i)
+  const callM = act.match(/^Calls? \$?([\d,.]+)/i)
   if (callM) {
     const amt = parseAmt(callM[1])
     return A('call', amt, undefined, `${name} calls ${bb(amt, bigBlind)}`)
   }
 
-  // Raise X to Y
-  const raiseM = act.match(/[Rr]aises? \$?([\d,]+) to \$?([\d,]+)/)
+  // Raise X to Y (includes All-in(raise) X to Y)
+  const raiseM = act.match(/[Rr]aises? \$?([\d,.]+) to \$?([\d,.]+)/) ?? act.match(/^All-in\([^)]+\) \$?([\d,.]+) to \$?([\d,.]+)/)
   if (raiseM) {
     const total = parseAmt(raiseM[2])
     return A('raise', total, undefined, `${name} raises to ${bb(total, bigBlind)}`)
   }
   // Raise X (no "to")
-  const raiseSimM = act.match(/^[Rr]aises? \$?([\d,]+)$/)
+  const raiseSimM = act.match(/^[Rr]aises? \$?([\d,.]+)$/)
   if (raiseSimM) {
     const total = parseAmt(raiseSimM[1])
     return A('raise', total, undefined, `${name} raises to ${bb(total, bigBlind)}`)
   }
 
-  // Bet
-  const betM = act.match(/^Bets? \$?([\d,]+)/)
+  // Bet (may have "chip info(timeout)" infix)
+  const betM = act.match(/^Bets? (?:chip info\([^)]+\) )?\$?([\d,.]+)/)
   if (betM) {
     const amt = parseAmt(betM[1])
     return A('bet', amt, undefined, `${name} bets ${bb(amt, bigBlind)}`)
   }
 
-  // All-in
-  const allinM = act.match(/^All-in \$?([\d,]+)/)
+  // All-in (simple, no raise syntax)
+  const allinM = act.match(/^All-in \$?([\d,.]+)/)
   if (allinM) {
     const amt = parseAmt(allinM[1])
     return A('allin', amt, undefined, `${name} all-in ${bb(amt, bigBlind)}`)
@@ -112,12 +116,12 @@ function parseActionLine(
     return A('showdown', undefined, parseCards(holeStr), `${name} shows ${showM[2]}`)
   }
 
-  // Does not show
-  const muckM = act.match(/^Does not show \[([^\]]+)\]/)
+  // Does not show / Mucks
+  const muckM = act.match(/^(?:Does not show|Mucks) \[([^\]]+)\]/)
   if (muckM) return A('doesnotshow', undefined, parseCards(muckM[1]), `${name} mucks`)
 
   // Hand result (case-insensitive R)
-  const resultM = act.match(/^Hand [Rr]esult \$?([\d,]+)/)
+  const resultM = act.match(/^Hand [Rr]esult \$?([\d,.]+)/)
   if (resultM) {
     const amt = parseAmt(resultM[1])
     return A('result', amt, undefined, `${name} wins ${bb(amt, bigBlind)}`)
@@ -140,7 +144,7 @@ function parseHand(text: string): ParsedHand | null {
   let i = 1
   while (i < lines.length) {
     // Handle chip counts with commas: (2,000 in chips) or ($100 in chips)
-    const m = lines[i].match(/^Seat (\d+): (.+?)(\s+\[ME\])?\s+\(\$?([\d,]+) in chips\)/)
+    const m = lines[i].match(/^Seat (\d+): (.+?)(\s+\[ME\])?\s+\(\$?([\d,.]+) in chips\)/)
     if (!m) break
     players.push({
       seatNumber: parseInt(m[1]),
@@ -160,7 +164,7 @@ function parseHand(text: string): ParsedHand | null {
     const ci = lines[j].indexOf(' : ')
     if (ci === -1) continue
     const actionText = lines[j].slice(ci + 3).trim()
-    const m = actionText.match(/^Big blind \$?([\d,]+)/i)
+    const m = actionText.match(/^Big blind \$?([\d,.]+)/i)
     if (m) { bigBlind = parseAmt(m[1]); break }
   }
 
