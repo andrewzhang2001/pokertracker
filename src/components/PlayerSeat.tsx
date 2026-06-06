@@ -16,7 +16,7 @@ function bbStr(amount: number, bigBlind: number): string {
 }
 
 export default function PlayerSeat({ player, posLabel, bigBlind, showCards, x, y }: Props) {
-  const showHoleCards = player.isMe || showCards
+  const showHoleCards = player.isMe || (showCards && !player.folded)
   const hasBet = player.streetBet > 0
 
   const borderColor = player.isMe
@@ -41,7 +41,7 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showCards, x, y
     >
       {/* Hole cards */}
       <div className="flex gap-1">
-        {player.holeCards
+        {player.holeCards && (player.isMe || !player.folded)
           ? showHoleCards
             ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} small />)
             : player.holeCards.map((_, i) => <FaceDownCard key={i} small />)
