@@ -1,3 +1,4 @@
+// Legacy: decode old #h= links that were base64+compressed
 async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
   const chunks: Uint8Array[] = []
   const reader = readable.getReader()
@@ -13,20 +14,7 @@ async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Ar
   return out
 }
 
-export async function encodeShare(rawText: string, notes: string): Promise<string> {
-  const payload = JSON.stringify({ h: rawText, n: notes })
-  const bytes = new TextEncoder().encode(payload)
-  const cs = new CompressionStream('deflate-raw')
-  const writer = cs.writable.getWriter()
-  writer.write(bytes)
-  writer.close()
-  const compressed = await readStream(cs.readable)
-  let bin = ''
-  for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i])
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-}
-
-export async function decodeShare(encoded: string): Promise<{ rawText: string; notes: string }> {
+export async function decodeLegacyShare(encoded: string): Promise<{ rawText: string; notes: string }> {
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
@@ -38,4 +26,22 @@ export async function decodeShare(encoded: string): Promise<{ rawText: string; n
   const decompressed = await readStream(ds.readable)
   const payload = JSON.parse(new TextDecoder().decode(decompressed))
   return { rawText: payload.h as string, notes: (payload.n as string) ?? '' }
+}
+
+// New: server-side short links via /api/share
+export async function createShareLink(rawText: string, notes: string): Promise<string> {
+  const res = await fetch('/api/share', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rawText, notes }),
+  })
+  if (!res.ok) throw new Error('Failed to create share link')
+  const { id } = await res.json() as { id: string }
+  return `${window.location.origin}${window.location.pathname}#id=${id}`
+}
+
+export async function loadShareById(id: string): Promise<{ rawText: string; notes: string }> {
+  const res = await fetch(`/api/share?id=${encodeURIComponent(id)}`)
+  if (!res.ok) throw new Error('Share link not found or expired')
+  return res.json() as Promise<{ rawText: string; notes: string }>
 }

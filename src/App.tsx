@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { computeHandState } from './lib/computeHandState'
-import { encodeShare, decodeShare } from './lib/shareUrl'
+import { createShareLink, loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import type { ParsedHand } from './lib/types'
 import PokerTable from './components/PokerTable'
 
@@ -14,6 +14,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [notes, setNotes] = useState('')
   const [shareOpen, setShareOpen] = useState(false)
+  const [sharing, setSharing] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const hand = hands[handIndex] ?? null
@@ -23,11 +24,14 @@ export default function App() {
     [hand, stepIndex],
   )
 
-  // Decode shared link on first load
+  // Decode shared link on first load — supports both #id= (new) and #h= (legacy)
   useEffect(() => {
     const hash = window.location.hash
-    if (!hash.startsWith('#h=')) return
-    decodeShare(hash.slice(3)).then(({ rawText, notes: n }) => {
+    let promise: Promise<{ rawText: string; notes: string }> | null = null
+    if (hash.startsWith('#id=')) promise = loadShareById(hash.slice(4))
+    else if (hash.startsWith('#h=')) promise = decodeLegacyShare(hash.slice(3))
+    if (!promise) return
+    promise.then(({ rawText, notes: n }) => {
       const parsed = parseHandHistories(rawText)
       if (parsed.length) {
         setHands(parsed)
@@ -87,11 +91,15 @@ export default function App() {
 
   async function copyShareLink() {
     if (!hand) return
-    const encoded = await encodeShare(hand.rawText, notes)
-    const url = `${window.location.origin}${window.location.pathname}#h=${encoded}`
-    await navigator.clipboard.writeText(url)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    setSharing(true)
+    try {
+      const url = await createShareLink(hand.rawText, notes)
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } finally {
+      setSharing(false)
+    }
   }
 
   if (!hands.length) {
@@ -229,13 +237,14 @@ export default function App() {
             </div>
             <button
               onClick={copyShareLink}
-              className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors ${
+              disabled={sharing}
+              className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-60 ${
                 copied
                   ? 'bg-green-700 text-green-100'
                   : 'bg-blue-600 hover:bg-blue-500 text-white'
               }`}
             >
-              {copied ? 'Copied!' : 'Copy link'}
+              {sharing ? 'Generating…' : copied ? 'Copied!' : 'Copy link'}
             </button>
           </div>
         </div>
