@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { parseHandHistories } from './lib/parseHandHistory'
+import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { computeHandState } from './lib/computeHandState'
 import type { ParsedHand } from './lib/types'
 import PokerTable from './components/PokerTable'
@@ -27,7 +27,7 @@ export default function App() {
   function loadText(text: string) {
     const parsed = parseHandHistories(text)
     if (!parsed.length) {
-      setError('No hands found — paste an Ignition hand history.')
+      setError(`No hands parsed. ${diagnose(text)}`)
     } else {
       setError(null)
       setHands(parsed)
