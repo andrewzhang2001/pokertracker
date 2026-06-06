@@ -31,13 +31,12 @@ export default function App() {
     }
   }
 
-  // Both hand index and step update atomically to avoid mid-render flicker
-  function goHand(delta: number) {
+  const goHand = useCallback((delta: number) => {
     const next = Math.max(0, Math.min(hands.length - 1, handIndex + delta))
     if (next === handIndex) return
     setHandIndex(next)
     setStepIndex(hands[next].initialStep)
-  }
+  }, [hands, handIndex])
 
   const goStep = useCallback((delta: number) => {
     if (!hand) return
@@ -50,10 +49,12 @@ export default function App() {
       if (e.target instanceof HTMLTextAreaElement) return
       if (e.key === 'ArrowRight') goStep(1)
       else if (e.key === 'ArrowLeft') goStep(-1)
+      else if (e.key === 'ArrowUp') { e.preventDefault(); goHand(-1) }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); goHand(1) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goStep])
+  }, [goStep, goHand])
 
   if (!hands.length) {
     return (
@@ -148,7 +149,7 @@ export default function App() {
               →
             </button>
           </div>
-          <p className="text-center text-gray-700 text-xs mt-1">← → arrow keys to step · ▲▼ to change hand</p>
+          <p className="text-center text-gray-700 text-xs mt-1">← → to step through actions · ↑ ↓ to change hand</p>
         </div>
       )}
     </div>
