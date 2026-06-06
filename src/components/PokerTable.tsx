@@ -8,13 +8,26 @@ interface Props {
   showOpponentCards: boolean
 }
 
+// Clockwise table order: Dealer → SB → BB → UTG → UTG+1 → ...
+const POSITION_RANK: Record<string, number> = {
+  'Dealer': 0, 'Small Blind': 1, 'Big Blind': 2,
+  'UTG': 3, 'UTG+1': 4, 'UTG+2': 5, 'UTG+3': 6, 'UTG+4': 7, 'UTG+5': 8,
+}
+
 function getPositions(players: PlayerInfo[]) {
   const me = players.find(p => p.isMe)
   if (!me) return {}
 
+  const total = players.length
+  const meRank = POSITION_RANK[me.position] ?? 0
+
   const others = [...players]
     .filter(p => !p.isMe)
-    .sort((a, b) => ((a.seatNumber - me.seatNumber + 9) % 9) - ((b.seatNumber - me.seatNumber + 9) % 9))
+    .sort((a, b) => {
+      const ai = ((POSITION_RANK[a.position] ?? 0) - meRank + total) % total
+      const bi = ((POSITION_RANK[b.position] ?? 0) - meRank + total) % total
+      return ai - bi
+    })
 
   const all = [me, ...others]
   const n = all.length
