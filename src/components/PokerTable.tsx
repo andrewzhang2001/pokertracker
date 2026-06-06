@@ -35,7 +35,7 @@ function getPositions(players: PlayerInfo[]) {
 
   const result: Record<number, { x: number; y: number }> = {}
   all.forEach((p, idx) => {
-    const deg = 180 - idx * (360 / n)
+    const deg = 180 + idx * (360 / n)
     const rad = (deg * Math.PI) / 180
     result[p.seatNumber] = {
       x: cx + rx * Math.sin(rad),
