@@ -3,6 +3,7 @@ import PlayingCard, { FaceDownCard } from './PlayingCard'
 
 interface Props {
   player: PlayerState
+  posLabel: string
   bigBlind: number
   showCards: boolean
   x: number
@@ -14,7 +15,7 @@ function bbStr(amount: number, bigBlind: number): string {
   return (Number.isInteger(v) ? String(v) : v.toFixed(1)) + 'bb'
 }
 
-export default function PlayerSeat({ player, bigBlind, showCards, x, y }: Props) {
+export default function PlayerSeat({ player, posLabel, bigBlind, showCards, x, y }: Props) {
   const showHoleCards = player.isMe || showCards
   const hasBet = player.streetBet > 0
 
@@ -53,7 +54,7 @@ export default function PlayerSeat({ player, bigBlind, showCards, x, y }: Props)
         style={{ background: 'rgba(0,0,0,0.75)', opacity: player.folded ? 0.45 : 1 }}
       >
         <div className="text-xs font-semibold text-white truncate">
-          {player.position}{player.isMe ? ' ★' : ''}
+          {posLabel}{player.isMe ? ' ★' : ''}
         </div>
         <div className="text-xs text-gray-300">{bbStr(player.stack, bigBlind)}</div>
       </div>

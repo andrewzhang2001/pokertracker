@@ -14,6 +14,21 @@ const POSITION_RANK: Record<string, number> = {
   'UTG': 3, 'UTG+1': 4, 'UTG+2': 5, 'UTG+3': 6, 'UTG+4': 7, 'UTG+5': 8,
 }
 
+// The 3 seats immediately clockwise before the Dealer are CO, HJ, LJ.
+// Which raw Ignition position those are depends on table size.
+function displayPosition(position: string, totalPlayers: number): string {
+  if (position === 'Dealer') return 'BU'
+  if (position === 'Small Blind') return 'SB'
+  if (position === 'Big Blind') return 'BB'
+  const rank = POSITION_RANK[position]
+  if (rank === undefined) return position
+  const stepsBeforeDealer = totalPlayers - rank
+  if (stepsBeforeDealer === 1) return 'CO'
+  if (stepsBeforeDealer === 2) return 'HJ'
+  if (stepsBeforeDealer === 3) return 'LJ'
+  return position
+}
+
 function getPositions(players: PlayerInfo[]) {
   const me = players.find(p => p.isMe)
   if (!me) return {}
@@ -88,6 +103,7 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
           <PlayerSeat
             key={player.seatNumber}
             player={player}
+            posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
             showCards={showOpponentCards}
             x={pos.x}
