@@ -41,20 +41,20 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, 
         {player.holeCards && !player.folded && (
           <div className="flex gap-1">
             {showHoleCards
-              ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} small />)
-              : player.holeCards.map((_, i) => <FaceDownCard key={i} small />)
+              ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} medium />)
+              : player.holeCards.map((_, i) => <FaceDownCard key={i} medium />)
             }
           </div>
         )}
 
         <div
-          className={`border-2 ${borderColor} rounded-lg px-2 py-1 text-center min-w-[72px] max-w-[90px]`}
+          className={`border-2 ${borderColor} rounded-lg px-3 py-1.5 text-center min-w-[108px] max-w-[135px]`}
           style={{ background: 'rgba(0,0,0,0.85)', opacity: player.folded ? 0.45 : 1 }}
         >
-          <div className="text-xs font-semibold text-white truncate">
+          <div className="text-sm font-semibold text-white truncate">
             {posLabel}{player.isMe ? ' ★' : ''}
           </div>
-          <div className="text-xs text-gray-300">{bbStr(player.stack, bigBlind)}</div>
+          <div className="text-sm text-gray-300">{bbStr(player.stack, bigBlind)}</div>
         </div>
       </div>
 

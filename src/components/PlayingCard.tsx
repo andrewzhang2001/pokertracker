@@ -12,17 +12,18 @@ const SUIT_BG: Record<string, string> = {
 
 interface Props {
   card: ParsedCard
+  medium?: boolean
   small?: boolean
   tiny?: boolean
 }
 
-export default function PlayingCard({ card, small, tiny }: Props) {
+export default function PlayingCard({ card, medium, small, tiny }: Props) {
   const sym = SUIT_SYMBOL[card.suit]
   const bg = SUIT_BG[card.suit]
-  const w = tiny ? 22 : small ? 30 : 40
-  const h = tiny ? 30 : small ? 42 : 56
-  const rankSize = tiny ? 12 : small ? 17 : 26
-  const suitSize = tiny ? 7 : small ? 10 : 13
+  const w = tiny ? 22 : small ? 30 : medium ? 45 : 40
+  const h = tiny ? 30 : small ? 42 : medium ? 63 : 56
+  const rankSize = tiny ? 12 : small ? 17 : medium ? 25 : 26
+  const suitSize = tiny ? 7 : small ? 10 : medium ? 11 : 13
 
   return (
     <div
@@ -44,9 +45,9 @@ export default function PlayingCard({ card, small, tiny }: Props) {
   )
 }
 
-export function FaceDownCard({ small }: { small?: boolean }) {
-  const w = small ? 30 : 40
-  const h = small ? 42 : 56
+export function FaceDownCard({ medium, small }: { medium?: boolean; small?: boolean }) {
+  const w = small ? 30 : medium ? 45 : 40
+  const h = small ? 42 : medium ? 63 : 56
   return (
     <div
       className="rounded shadow-md border border-blue-700"
