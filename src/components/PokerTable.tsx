@@ -1,6 +1,8 @@
 import type { ParsedHand, HandState, PlayerInfo } from '../lib/types'
+import { POSITION_RANK, displayPosition } from '../lib/positionUtils'
 import PlayerSeat from './PlayerSeat'
 import PlayingCard from './PlayingCard'
+import ChipStack from './ChipStack'
 
 interface Props {
   hand: ParsedHand
@@ -8,30 +10,13 @@ interface Props {
   showOpponentCards: boolean
 }
 
-// Clockwise table order: Dealer → SB → BB → UTG → UTG+1 → ...
-const POSITION_RANK: Record<string, number> = {
-  'Dealer': 0, 'Small Blind': 1, 'Big Blind': 2,
-  'UTG': 3, 'UTG+1': 4, 'UTG+2': 5, 'UTG+3': 6, 'UTG+4': 7, 'UTG+5': 8,
-}
+// No outward push — box centered on the oval rim
+const PUSH_X = 0
+const PUSH_Y = 0
 
-// The 3 seats immediately clockwise before the Dealer are CO, HJ, LJ.
-// Which raw Ignition position those are depends on table size.
-function displayPosition(position: string, totalPlayers: number): string {
-  if (position === 'Dealer') return 'BU'
-  if (position === 'Small Blind') return 'SB'
-  if (position === 'Big Blind') return 'BB'
-  const rank = POSITION_RANK[position]
-  if (rank === undefined) return position
-  const stepsBeforeDealer = totalPlayers - rank
-  if (stepsBeforeDealer === 1) return 'CO'
-  if (stepsBeforeDealer === 2) return 'HJ'
-  if (stepsBeforeDealer === 3) return 'LJ'
-  return position
-}
-
-function getPositions(players: PlayerInfo[]) {
+function getLayout(players: PlayerInfo[]) {
   const me = players.find(p => p.isMe)
-  if (!me) return {}
+  if (!me) return { seats: {} as Record<number, { x: number; y: number }>, chips: {} as Record<number, { x: number; y: number }> }
 
   const total = players.length
   const meRank = POSITION_RANK[me.position] ?? 0
@@ -46,18 +31,25 @@ function getPositions(players: PlayerInfo[]) {
 
   const all = [me, ...others]
   const n = all.length
-  const cx = 50, cy = 50, rx = 42, ry = 34
+  const cx = 50, cy = 50, rx = 46, ry = 46
 
-  const result: Record<number, { x: number; y: number }> = {}
+  const seats: Record<number, { x: number; y: number }> = {}
+  const chips: Record<number, { x: number; y: number }> = {}
+
   all.forEach((p, idx) => {
     const deg = 180 + idx * (360 / n)
     const rad = (deg * Math.PI) / 180
-    result[p.seatNumber] = {
-      x: cx + rx * Math.sin(rad),
-      y: cy - ry * Math.cos(rad),
+    const x = cx + rx * Math.sin(rad)
+    const y = cy - ry * Math.cos(rad)
+    seats[p.seatNumber] = { x, y }
+    // bet chips: 28% of way from player toward center — close to the player
+    chips[p.seatNumber] = {
+      x: x + (cx - x) * 0.28,
+      y: y + (cy - y) * 0.28,
     }
   })
-  return result
+
+  return { seats, chips }
 }
 
 function bbStr(amount: number, bigBlind: number): string {
@@ -66,7 +58,7 @@ function bbStr(amount: number, bigBlind: number): string {
 }
 
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
-  const positions = getPositions(hand.players)
+  const { seats, chips } = getLayout(hand.players)
 
   return (
     <div className="relative w-full" style={{ paddingBottom: '60%' }}>
@@ -79,35 +71,71 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
         }}
       />
 
-      {/* Community cards + pot */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-        {state.communityCards.length > 0 && (
-          <div className="flex gap-1.5">
-            {state.communityCards.map((c, i) => (
-              <PlayingCard key={i} card={c} />
-            ))}
+      {/* Player bet chip stacks — just inside the oval near each player */}
+      {state.players.map(player => {
+        if (player.streetBet <= 0 || player.folded) return null
+        const pos = chips[player.seatNumber]
+        if (!pos) return null
+        return (
+          <div
+            key={`chips-${player.seatNumber}`}
+            className="absolute z-10"
+            style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: 'translate(-50%, -50%)' }}
+          >
+            <ChipStack amountBB={player.streetBet / hand.bigBlind} />
           </div>
-        )}
-        {state.pot > 0 && (
-          <div className="text-yellow-300 font-bold text-sm bg-black/50 px-3 py-1 rounded-full">
-            Pot: {bbStr(state.pot, hand.bigBlind)}
-          </div>
-        )}
+        )
+      })}
+
+      {/* Center: pot chips (left) + community cards (right, always 5 slots) */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="flex items-center gap-5">
+          {state.pot > 0 && (
+            <div className="flex flex-col items-center gap-1">
+              <ChipStack amountBB={state.pot / hand.bigBlind} />
+              <span className="text-yellow-300 font-bold bg-black/40 px-1.5 rounded" style={{ fontSize: 11 }}>
+                {bbStr(state.pot, hand.bigBlind)}
+              </span>
+            </div>
+          )}
+          {state.communityCards.length > 0 && (
+            <div className="flex gap-1.5">
+              {[0, 1, 2, 3, 4].map(i =>
+                state.communityCards[i]
+                  ? <PlayingCard key={i} card={state.communityCards[i]} />
+                  : <div key={i} style={{ width: 40, height: 56 }} />
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Player seats */}
+      {/* Player seats — whole element (cards + box) pushed outward onto the rail */}
       {state.players.map(player => {
-        const pos = positions[player.seatNumber]
-        if (!pos) return null
+        const seatPos = seats[player.seatNumber]
+        if (!seatPos) return null
+        const { x, y } = seatPos
+
+        // Outward unit vector from center to player
+        const dx = x - 50, dy = y - 50
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        const nx = dx / dist, ny = dy / dist
+
+        // Push whole element outward — asymmetric: more vertical than horizontal
+        const px = x + nx * PUSH_X
+        const py = y + ny * PUSH_Y
+
+        const showHoleCards = (!player.folded && player.isMe) || (showOpponentCards && !player.folded)
+
         return (
           <PlayerSeat
             key={player.seatNumber}
             player={player}
             posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
-            showCards={showOpponentCards}
-            x={pos.x}
-            y={pos.y}
+            showHoleCards={showHoleCards}
+            x={px}
+            y={py}
           />
         )
       })}

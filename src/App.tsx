@@ -4,6 +4,7 @@ import { computeHandState } from './lib/computeHandState'
 import { createShareLink, loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import type { ParsedHand } from './lib/types'
 import PokerTable from './components/PokerTable'
+import HandSummaryPanel from './components/HandSummaryPanel'
 
 export default function App() {
   const [hands, setHands] = useState<ParsedHand[]>([])
@@ -12,10 +13,12 @@ export default function App() {
   const [showOpponentCards, setShowOpponentCards] = useState(true)
   const [pasteText, setPasteText] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [notes, setNotes] = useState('')
-  const [shareOpen, setShareOpen] = useState(false)
+  const [handNotes, setHandNotes] = useState<string[]>([])
   const [sharing, setSharing] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [selectedHandIndices, setSelectedHandIndices] = useState<Set<number>>(new Set())
+  const [sharingSelected, setSharingSelected] = useState(false)
+  const [copiedSelected, setCopiedSelected] = useState(false)
 
   const hand = hands[handIndex] ?? null
 
@@ -27,17 +30,18 @@ export default function App() {
   // Decode shared link on first load — supports both #id= (new) and #h= (legacy)
   useEffect(() => {
     const hash = window.location.hash
-    let promise: Promise<{ rawText: string; notes: string }> | null = null
+    let promise: Promise<{ rawText: string; handNotes: string[] }> | null = null
     if (hash.startsWith('#id=')) promise = loadShareById(hash.slice(4))
     else if (hash.startsWith('#h=')) promise = decodeLegacyShare(hash.slice(3))
     if (!promise) return
-    promise.then(({ rawText, notes: n }) => {
+    promise.then(({ rawText, handNotes: hn }) => {
       const parsed = parseHandHistories(rawText)
       if (parsed.length) {
         setHands(parsed)
         setHandIndex(0)
         setStepIndex(parsed[0].initialStep)
-        setNotes(n)
+        const notes = Array.from({ length: parsed.length }, (_, i) => hn[i] ?? '')
+        setHandNotes(notes)
       }
     }).catch(() => {})
   }, [])
@@ -51,7 +55,8 @@ export default function App() {
       setHands(parsed)
       setHandIndex(0)
       setStepIndex(parsed[0].initialStep)
-      setNotes('')
+      setHandNotes(new Array(parsed.length).fill(''))
+      setSelectedHandIndices(new Set())
       history.replaceState(null, '', window.location.pathname)
     }
   }
@@ -59,8 +64,53 @@ export default function App() {
   function resetApp() {
     setHands([])
     setPasteText('')
-    setNotes('')
+    setHandNotes([])
+    setSelectedHandIndices(new Set())
     history.replaceState(null, '', window.location.pathname)
+  }
+
+  function jumpToHand(idx: number) {
+    setHandIndex(idx)
+    setStepIndex(hands[idx].initialStep)
+  }
+
+  function updateNote(idx: number, value: string) {
+    setHandNotes(prev => {
+      const next = [...prev]
+      next[idx] = value
+      return next
+    })
+  }
+
+  function toggleSelectHand(idx: number, checked: boolean) {
+    setSelectedHandIndices(prev => {
+      const next = new Set(prev)
+      if (checked) next.add(idx); else next.delete(idx)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selectedHandIndices.size === hands.length) {
+      setSelectedHandIndices(new Set())
+    } else {
+      setSelectedHandIndices(new Set(hands.map((_, i) => i)))
+    }
+  }
+
+  async function shareSelectedHands() {
+    const sorted = [...selectedHandIndices].sort((a, b) => a - b)
+    const rawText = sorted.map(i => hands[i].rawText).join('\n\n')
+    const notes = sorted.map(i => handNotes[i] ?? '')
+    setSharingSelected(true)
+    try {
+      const url = await createShareLink(rawText, notes)
+      await navigator.clipboard.writeText(url)
+      setCopiedSelected(true)
+      setTimeout(() => setCopiedSelected(false), 2000)
+    } finally {
+      setSharingSelected(false)
+    }
   }
 
   const goHand = useCallback((delta: number) => {
@@ -75,11 +125,9 @@ export default function App() {
     setStepIndex(i => Math.max(-1, Math.min(hand.actions.length - 1, i + delta)))
   }, [hand])
 
-  // Keyboard navigation
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLTextAreaElement) return
-      if (shareOpen) return
       if (e.key === 'ArrowRight') goStep(1)
       else if (e.key === 'ArrowLeft') goStep(-1)
       else if (e.key === 'ArrowUp') { e.preventDefault(); goHand(-1) }
@@ -87,13 +135,13 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [goStep, goHand, shareOpen])
+  }, [goStep, goHand])
 
   async function copyShareLink() {
     if (!hand) return
     setSharing(true)
     try {
-      const url = await createShareLink(hand.rawText, notes)
+      const url = await createShareLink(hand.rawText, [handNotes[handIndex] ?? ''])
       await navigator.clipboard.writeText(url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
@@ -129,7 +177,7 @@ export default function App() {
   const currentDesc = state?.lastAction?.desc ?? '—'
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
         <div className="flex items-center gap-2">
@@ -161,28 +209,40 @@ export default function App() {
             {showOpponentCards ? 'Cards: on' : 'Cards: off'}
           </button>
           <button
-            onClick={() => setShareOpen(true)}
-            className="text-xs px-3 py-1 rounded-full border border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20 transition-colors"
+            onClick={copyShareLink}
+            disabled={sharing}
+            className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
+              copied
+                ? 'border-green-600 text-green-400 bg-green-600/10'
+                : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
+            }`}
           >
-            Share
+            {sharing ? '…' : copied ? 'Copied!' : 'Share'}
           </button>
         </div>
       </div>
 
-      {/* Notes banner */}
-      {notes && (
-        <div className="px-4 py-2 bg-yellow-900/30 border-b border-yellow-800/50 text-yellow-200 text-sm whitespace-pre-wrap max-w-3xl mx-auto w-full">
-          {notes}
+      {/* Main content: summary panel + table */}
+      <div className="flex-1 flex overflow-hidden">
+        <HandSummaryPanel
+          hands={hands}
+          handIndex={handIndex}
+          handNotes={handNotes}
+          selected={selectedHandIndices}
+          onSelect={toggleSelectHand}
+          onSelectAll={toggleSelectAll}
+          onClickHand={jumpToHand}
+          onShareSelected={shareSelectedHands}
+          sharingSelected={sharingSelected}
+          copiedSelected={copiedSelected}
+        />
+        <div className="flex-1 flex items-center justify-center px-4 py-2 min-h-0">
+          {hand && state && (
+            <div className="w-full max-w-5xl">
+              <PokerTable hand={hand} state={state} showOpponentCards={showOpponentCards} />
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Table */}
-      <div className="flex-1 flex items-center justify-center px-4 py-2">
-        {hand && state && (
-          <div className="w-full max-w-3xl">
-            <PokerTable hand={hand} state={state} showOpponentCards={showOpponentCards} />
-          </div>
-        )}
       </div>
 
       {/* Bottom bar */}
@@ -210,43 +270,14 @@ export default function App() {
               →
             </button>
           </div>
+          <textarea
+            className="w-full max-w-3xl mx-auto block mt-2 bg-transparent text-gray-300 text-sm placeholder-gray-700 resize-none focus:outline-none focus:placeholder-gray-600 transition-colors"
+            rows={2}
+            placeholder="Notes for this hand…"
+            value={handNotes[handIndex] ?? ''}
+            onChange={e => updateNote(handIndex, e.target.value)}
+          />
           <p className="text-center text-gray-700 text-xs mt-1">← → to step through actions · ↑ ↓ to change hand</p>
-        </div>
-      )}
-
-      {/* Share modal */}
-      {shareOpen && (
-        <div
-          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-          onClick={e => { if (e.target === e.currentTarget) setShareOpen(false) }}
-        >
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-md flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-white font-semibold text-lg">Share hand</h2>
-              <button onClick={() => setShareOpen(false)} className="text-gray-500 hover:text-white text-xl leading-none">✕</button>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-gray-400 text-xs">Notes (optional)</label>
-              <textarea
-                className="bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-blue-500 resize-none h-32"
-                placeholder="Add analysis, questions, or context..."
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                autoFocus
-              />
-            </div>
-            <button
-              onClick={copyShareLink}
-              disabled={sharing}
-              className={`px-4 py-2 rounded-lg font-semibold text-sm transition-colors disabled:opacity-60 ${
-                copied
-                  ? 'bg-green-700 text-green-100'
-                  : 'bg-blue-600 hover:bg-blue-500 text-white'
-              }`}
-            >
-              {sharing ? 'Generating…' : copied ? 'Copied!' : 'Copy link'}
-            </button>
-          </div>
         </div>
       )}
     </div>

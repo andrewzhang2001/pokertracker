@@ -5,7 +5,7 @@ interface Props {
   player: PlayerState
   posLabel: string
   bigBlind: number
-  showCards: boolean
+  showHoleCards: boolean
   x: number
   y: number
 }
@@ -15,10 +15,7 @@ function bbStr(amount: number, bigBlind: number): string {
   return (Number.isInteger(v) ? String(v) : v.toFixed(1)) + 'bb'
 }
 
-export default function PlayerSeat({ player, posLabel, bigBlind, showCards, x, y }: Props) {
-  const showHoleCards = player.isMe || (showCards && !player.folded)
-  const hasBet = player.streetBet > 0
-
+export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, x, y }: Props) {
   const borderColor = player.isMe
     ? 'border-yellow-400'
     : player.folded
@@ -36,40 +33,38 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showCards, x, y
 
   return (
     <div
-      className="absolute flex flex-col items-center gap-0.5"
+      className="absolute z-20"
       style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
     >
-      {/* Hole cards */}
-      <div className="flex gap-1">
-        {player.holeCards && (player.isMe || !player.folded)
-          ? showHoleCards
-            ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} small />)
-            : player.holeCards.map((_, i) => <FaceDownCard key={i} small />)
-          : null}
-      </div>
+      <div className="flex flex-col items-center gap-0.5">
+        {/* Hole cards sit on top of the info box */}
+        {player.holeCards && !player.folded && (
+          <div className="flex gap-1">
+            {showHoleCards
+              ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} small />)
+              : player.holeCards.map((_, i) => <FaceDownCard key={i} small />)
+            }
+          </div>
+        )}
 
-      {/* Info box */}
-      <div
-        className={`border-2 ${borderColor} rounded-lg px-2 py-1 text-center min-w-[72px] max-w-[90px]`}
-        style={{ background: 'rgba(0,0,0,0.75)', opacity: player.folded ? 0.45 : 1 }}
-      >
-        <div className="text-xs font-semibold text-white truncate">
-          {posLabel}{player.isMe ? ' ★' : ''}
+        <div
+          className={`border-2 ${borderColor} rounded-lg px-2 py-1 text-center min-w-[72px] max-w-[90px]`}
+          style={{ background: 'rgba(0,0,0,0.85)', opacity: player.folded ? 0.45 : 1 }}
+        >
+          <div className="text-xs font-semibold text-white truncate">
+            {posLabel}{player.isMe ? ' ★' : ''}
+          </div>
+          <div className="text-xs text-gray-300">{bbStr(player.stack, bigBlind)}</div>
         </div>
-        <div className="text-xs text-gray-300">{bbStr(player.stack, bigBlind)}</div>
       </div>
 
-      {/* Street action badge */}
+      {/* Badge: absolutely positioned so it never shifts cards/box */}
       {player.streetAction && (
-        <div className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${actionColor}`}>
+        <div
+          className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-xs px-1.5 py-0.5 rounded-full font-medium ${actionColor}`}
+          style={{ top: '100%', marginTop: 2 }}
+        >
           {player.streetAction}
-        </div>
-      )}
-
-      {/* Current street bet (chips in front) */}
-      {hasBet && !player.folded && (
-        <div className="text-xs text-yellow-300 font-medium">
-          {bbStr(player.streetBet, bigBlind)}
         </div>
       )}
     </div>

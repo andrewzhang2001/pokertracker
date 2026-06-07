@@ -13,20 +13,21 @@ const SUIT_BG: Record<string, string> = {
 interface Props {
   card: ParsedCard
   small?: boolean
+  tiny?: boolean
 }
 
-export default function PlayingCard({ card, small }: Props) {
+export default function PlayingCard({ card, small, tiny }: Props) {
   const sym = SUIT_SYMBOL[card.suit]
   const bg = SUIT_BG[card.suit]
-  const w = small ? 30 : 40
-  const h = small ? 42 : 56
-  const rankSize = small ? 15 : 22
-  const suitSize = small ? 8 : 11
+  const w = tiny ? 22 : small ? 30 : 40
+  const h = tiny ? 30 : small ? 42 : 56
+  const rankSize = tiny ? 12 : small ? 17 : 26
+  const suitSize = tiny ? 7 : small ? 10 : 13
 
   return (
     <div
       className="rounded shadow-md select-none relative flex items-center justify-center"
-      style={{ width: w, height: h, background: bg }}
+      style={{ width: w, height: h, background: bg, boxShadow: 'inset 1px 1px 0 rgba(255,255,255,0.22)' }}
     >
       {/* suit + rank in top-left */}
       <div
@@ -52,6 +53,7 @@ export function FaceDownCard({ small }: { small?: boolean }) {
       style={{
         width: w, height: h,
         background: 'repeating-linear-gradient(45deg, #1e3a5f 0px, #1e3a5f 2px, #1a3356 2px, #1a3356 8px)',
+        boxShadow: 'inset 1px 1px 0 rgba(255,255,255,0.18)',
       }}
     />
   )

@@ -14,20 +14,24 @@ function randomId(): string {
   return id
 }
 
+type Payload = { rawText: string; handNotes: string[] }
+
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'POST') {
-    const { rawText, notes } = await req.json() as { rawText: string; notes: string }
+    const body = await req.json() as { rawText: string; handNotes?: string[]; notes?: string }
+    const handNotes = body.handNotes ?? (body.notes ? [body.notes] : [''])
     const id = randomId()
-    await redis.set(id, { rawText, notes }, { ex: 7_776_000 }) // 90 days TTL
+    await redis.set(id, { rawText: body.rawText, handNotes }, { ex: 7_776_000 })
     return Response.json({ id })
   }
 
   if (req.method === 'GET') {
     const id = new URL(req.url).searchParams.get('id')
     if (!id) return Response.json({ error: 'missing id' }, { status: 400 })
-    const data = await redis.get<{ rawText: string; notes: string }>(id)
+    const data = await redis.get<Payload & { notes?: string }>(id)
     if (!data) return Response.json({ error: 'not found' }, { status: 404 })
-    return Response.json(data)
+    const handNotes = data.handNotes ?? (data.notes ? [data.notes] : [''])
+    return Response.json({ rawText: data.rawText, handNotes })
   }
 
   return Response.json({ error: 'method not allowed' }, { status: 405 })

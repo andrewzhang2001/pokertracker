@@ -14,7 +14,7 @@ async function readStream(readable: ReadableStream<Uint8Array>): Promise<Uint8Ar
   return out
 }
 
-export async function decodeLegacyShare(encoded: string): Promise<{ rawText: string; notes: string }> {
+export async function decodeLegacyShare(encoded: string): Promise<{ rawText: string; handNotes: string[] }> {
   const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
@@ -25,23 +25,25 @@ export async function decodeLegacyShare(encoded: string): Promise<{ rawText: str
   writer.close()
   const decompressed = await readStream(ds.readable)
   const payload = JSON.parse(new TextDecoder().decode(decompressed))
-  return { rawText: payload.h as string, notes: (payload.n as string) ?? '' }
+  return { rawText: payload.h as string, handNotes: [(payload.n as string) ?? ''] }
 }
 
-// New: server-side short links via /api/share
-export async function createShareLink(rawText: string, notes: string): Promise<string> {
+export async function createShareLink(rawText: string, handNotes: string[]): Promise<string> {
   const res = await fetch('/api/share', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rawText, notes }),
+    body: JSON.stringify({ rawText, handNotes }),
   })
   if (!res.ok) throw new Error('Failed to create share link')
   const { id } = await res.json() as { id: string }
   return `${window.location.origin}${window.location.pathname}#id=${id}`
 }
 
-export async function loadShareById(id: string): Promise<{ rawText: string; notes: string }> {
+export async function loadShareById(id: string): Promise<{ rawText: string; handNotes: string[] }> {
   const res = await fetch(`/api/share?id=${encodeURIComponent(id)}`)
   if (!res.ok) throw new Error('Share link not found or expired')
-  return res.json() as Promise<{ rawText: string; notes: string }>
+  const data = await res.json() as { rawText: string; handNotes?: string[]; notes?: string }
+  // backward compat: old links stored notes as a single string
+  const handNotes = data.handNotes ?? (data.notes ? [data.notes] : [''])
+  return { rawText: data.rawText, handNotes }
 }
