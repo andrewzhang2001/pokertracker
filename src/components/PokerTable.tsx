@@ -102,8 +102,8 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
             <div className="flex gap-1.5">
               {[0, 1, 2, 3, 4].map(i =>
                 state.communityCards[i]
-                  ? <PlayingCard key={i} card={state.communityCards[i]} />
-                  : <div key={i} style={{ width: 40, height: 56 }} />
+                  ? <PlayingCard key={i} card={state.communityCards[i]} medium />
+                  : <div key={i} style={{ width: 45, height: 63 }} />
               )}
             </div>
           )}
