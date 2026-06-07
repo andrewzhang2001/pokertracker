@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
-import type { Plugin, IncomingMessage, ServerResponse } from 'vite'
+import type { Plugin } from 'vite'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 
 function apiRoutes(env: Record<string, string>): Plugin {
   return {
