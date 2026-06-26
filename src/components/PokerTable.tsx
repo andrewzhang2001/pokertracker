@@ -1,3 +1,4 @@
+import { useRef, useState, useLayoutEffect } from 'react'
 import type { ParsedHand, HandState, PlayerInfo } from '../lib/types'
 import { POSITION_RANK, displayPosition } from '../lib/positionUtils'
 import PlayerSeat from './PlayerSeat'
@@ -9,6 +10,16 @@ interface Props {
   state: HandState
   showOpponentCards: boolean
 }
+
+// The table is laid out at a fixed "design" size (felt = BASE_W × BASE_H) so
+// that the percentage-positioned seats and the fixed-pixel cards keep a constant
+// proportion. We then scale the whole thing to fit the available container in
+// BOTH dimensions. MARGIN_* reserve room for seat boxes / hole cards that
+// overhang the felt, so nothing gets clipped on small screens.
+const BASE_W = 1000
+const BASE_H = 600
+const MARGIN_X = 100
+const MARGIN_Y = 95
 
 // No outward push — box centered on the oval rim
 const PUSH_X = 0
@@ -57,11 +68,47 @@ function bbStr(amount: number, bigBlind: number): string {
   return (Number.isInteger(v) ? String(v) : v.toFixed(1)) + 'bb'
 }
 
+function actionColor(streetAction: string): string {
+  if (streetAction === 'Fold') return 'bg-gray-700 text-gray-400'
+  if (streetAction.startsWith('Raise') || streetAction.startsWith('Bet') || streetAction.startsWith('All-in'))
+    return 'bg-orange-700 text-orange-200'
+  if (streetAction.startsWith('Call')) return 'bg-blue-800 text-blue-200'
+  return 'bg-slate-700 text-slate-300'
+}
+
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
   const { seats, chips } = getLayout(hand.players)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () => {
+      const { width, height } = el.getBoundingClientRect()
+      if (!width || !height) return
+      // Scale against the design size plus overhang margins so seats never clip.
+      const s = Math.min(width / (BASE_W + MARGIN_X * 2), height / (BASE_H + MARGIN_Y * 2))
+      setScale(Math.min(s, 1)) // never enlarge beyond the design size
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   return (
-    <div className="relative w-full" style={{ paddingBottom: '60%' }}>
+    <div ref={containerRef} className="w-full h-full flex items-center justify-center">
+      <div
+        style={{
+          width: BASE_W,
+          height: BASE_H,
+          flexShrink: 0,
+          transform: `scale(${scale})`,
+          transformOrigin: 'center',
+        }}
+      >
+        <div className="relative w-full h-full">
       {/* Table felt */}
       <div
         className="absolute inset-0 rounded-[50%] border-8 border-yellow-900"
@@ -71,18 +118,38 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
         }}
       />
 
-      {/* Player bet chip stacks — just inside the oval near each player */}
+      {/* Bet chips + action text — just inside the oval near each player.
+          Chips stay anchored toward the table; the action label sits on the
+          side of the chips facing the table CENTER, so it never overlaps that
+          player's own hole cards (which are on the rim side of the chips). */}
       {state.players.map(player => {
-        if (player.streetBet <= 0 || player.folded) return null
         const pos = chips[player.seatNumber]
-        if (!pos) return null
+        const seatPos = seats[player.seatNumber]
+        if (!pos || !seatPos) return null
+        const hasChips = player.streetBet > 0 && !player.folded
+        const action = player.streetAction
+        if (!hasChips && !action) return null
+        // Players in the lower half sit below center, so "toward center" is up.
+        const labelAbove = seatPos.y > 50
         return (
           <div
             key={`chips-${player.seatNumber}`}
             className="absolute z-10"
             style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: 'translate(-50%, -50%)' }}
           >
-            <ChipStack amountBB={player.streetBet / hand.bigBlind} />
+            <div className="relative flex flex-col items-center">
+              {hasChips && <ChipStack amountBB={player.streetBet / hand.bigBlind} />}
+              {action && (
+                <div
+                  className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-xs px-1.5 py-0.5 rounded-full font-medium ${actionColor(action)}`}
+                  style={labelAbove
+                    ? { bottom: '100%', marginBottom: hasChips ? 2 : 0 }
+                    : { top: '100%', marginTop: hasChips ? 2 : 0 }}
+                >
+                  {action}
+                </div>
+              )}
+            </div>
           </div>
         )
       })}
@@ -139,6 +206,8 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
           />
         )
       })}
+        </div>
+      </div>
     </div>
   )
 }

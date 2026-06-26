@@ -22,15 +22,6 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, 
     ? 'border-gray-700'
     : 'border-slate-500'
 
-  const actionColor =
-    player.streetAction === 'Fold'
-      ? 'bg-gray-700 text-gray-400'
-      : player.streetAction?.startsWith('Raise') || player.streetAction?.startsWith('Bet') || player.streetAction?.startsWith('All-in')
-      ? 'bg-orange-700 text-orange-200'
-      : player.streetAction?.startsWith('Call')
-      ? 'bg-blue-800 text-blue-200'
-      : 'bg-slate-700 text-slate-300'
-
   return (
     <div
       className="absolute z-20"
@@ -57,16 +48,6 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, 
           <div className="text-sm text-gray-300">{bbStr(player.stack, bigBlind)}</div>
         </div>
       </div>
-
-      {/* Badge: absolutely positioned so it never shifts cards/box */}
-      {player.streetAction && (
-        <div
-          className={`absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-xs px-1.5 py-0.5 rounded-full font-medium ${actionColor}`}
-          style={{ top: '100%', marginTop: 2 }}
-        >
-          {player.streetAction}
-        </div>
-      )}
     </div>
   )
 }

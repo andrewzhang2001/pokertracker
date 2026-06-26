@@ -154,7 +154,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
         <h1 className="text-3xl font-bold text-white">Poker Hand Tracker</h1>
-        <p className="text-gray-400">Paste your Ignition hand history below</p>
+        <p className="text-gray-400">Paste your Ignition hand history below (NLHE & PLO supported)</p>
         <textarea
           className="w-full max-w-2xl h-64 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-yellow-500 resize-none font-mono"
           placeholder="Paste hand history here..."
@@ -196,6 +196,7 @@ export default function App() {
           </div>
           <span className="text-white font-medium">{handIndex + 1} / {hands.length}</span>
           {hand && <span className="text-gray-600 text-xs hidden sm:inline">{hand.date}</span>}
+          {hand?.gameType && <span className="text-gray-700 text-xs hidden sm:inline">{hand.gameType}</span>}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -236,11 +237,9 @@ export default function App() {
           sharingSelected={sharingSelected}
           copiedSelected={copiedSelected}
         />
-        <div className="flex-1 flex items-center justify-center px-4 py-2 min-h-0">
+        <div className="flex-1 min-h-0 min-w-0 px-4 py-2">
           {hand && state && (
-            <div className="w-full max-w-5xl">
-              <PokerTable hand={hand} state={state} showOpponentCards={showOpponentCards} />
-            </div>
+            <PokerTable hand={hand} state={state} showOpponentCards={showOpponentCards} />
           )}
         </div>
       </div>

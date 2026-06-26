@@ -4,6 +4,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
+import { analyzeHand } from '../analyzeHand'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -11,6 +12,7 @@ const root = resolve(__dirname, '../../../')
 const hh = readFileSync(resolve(root, 'hh.txt'), 'utf-8')
 const hh2 = readFileSync(resolve(root, 'hh2.txt'), 'utf-8')
 const hh3 = readFileSync(resolve(root, 'hh3.txt'), 'utf-8')
+const hhPlo = readFileSync(resolve(root, 'hh_plo.txt'), 'utf-8')
 
 describe('hh.txt – tournament with antes', () => {
   const hands = parseHandHistories(hh)
@@ -238,5 +240,197 @@ describe('hh3.txt – cash game ($0.50/$1)', () => {
       const state = computeHandState(hand, hand.actions.length - 1)
       expect(state.pot).toBeCloseTo(261.28, 2)
     })
+  })
+})
+
+describe('hh_plo.txt – PLO cash game ($0.10/$0.25)', () => {
+  const hands = parseHandHistories(hhPlo)
+
+  test('parses all 38 hands', () => {
+    expect(hands.length).toBe(38)
+  })
+
+  test('gameType is "OMAHA Pot Limit"', () => {
+    expect(hands[0].gameType).toBe('OMAHA Pot Limit')
+    expect(hands[hands.length - 1].gameType).toBe('OMAHA Pot Limit')
+  })
+
+  test('bigBlind is 0.25', () => {
+    expect(hands[0].bigBlind).toBe(0.25)
+  })
+
+  describe('hand #4899119185 (first hand – 4 hole cards for PLO)', () => {
+    const hand = hands.find(h => h.handId === '4899119185')!
+
+    test('found', () => expect(hand).toBeDefined())
+    test('Big Blind is ME', () => {
+      const me = hand.players.find(p => p.isMe)
+      expect(me?.position).toBe('Big Blind')
+    })
+    test('ME has 4 hole cards [4c Jh Kc 5s]', () => {
+      const state = computeHandState(hand, hand.initialStep)
+      const me = state.players.find(p => p.isMe)
+      expect(me?.holeCards).toEqual([
+        { rank: '4', suit: 'c' },
+        { rank: 'J', suit: 'h' },
+        { rank: 'K', suit: 'c' },
+        { rank: '5', suit: 's' },
+      ])
+    })
+    test('4 players', () => expect(hand.players.length).toBe(4))
+  })
+
+  describe('hand #4899119603 (showdown: Dealer 4-card hole cards not overwritten by 5-card combo)', () => {
+    const hand = hands.find(h => h.handId === '4899119603')!
+
+    test('found', () => expect(hand).toBeDefined())
+    test('ME is UTG+2', () => {
+      const me = hand.players.find(p => p.isMe)
+      expect(me?.position).toBe('UTG+2')
+    })
+    test('ME hole cards are [4c 5c Ts Kc]', () => {
+      const state = computeHandState(hand, hand.initialStep)
+      const me = state.players.find(p => p.isMe)
+      expect(me?.holeCards).toEqual([
+        { rank: '4', suit: 'c' },
+        { rank: '5', suit: 'c' },
+        { rank: 'T', suit: 's' },
+        { rank: 'K', suit: 'c' },
+      ])
+    })
+    test('Dealer hole cards are [Ad 9c Th Ah], NOT the 5-card showdown combo', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      const dealer = state.players.find(p => p.position === 'Dealer')
+      expect(dealer?.holeCards).toEqual([
+        { rank: 'A', suit: 'd' },
+        { rank: '9', suit: 'c' },
+        { rank: 'T', suit: 'h' },
+        { rank: 'A', suit: 'h' },
+      ])
+    })
+    test('board is [6d 3d 8h 4s 8s]', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      expect(state.communityCards).toEqual([
+        { rank: '6', suit: 'd' },
+        { rank: '3', suit: 'd' },
+        { rank: '8', suit: 'h' },
+        { rank: '4', suit: 's' },
+        { rank: '8', suit: 's' },
+      ])
+    })
+  })
+
+  describe('hand #4899121151 (showdown + muck: hole cards preserved through both)', () => {
+    const hand = hands.find(h => h.handId === '4899121151')!
+
+    test('found', () => expect(hand).toBeDefined())
+    test('Small Blind 4-card hole cards [4d 6s 6h 8c] not overwritten by Showdown 5-card combo', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      const sb = state.players.find(p => p.position === 'Small Blind')
+      expect(sb?.holeCards).toEqual([
+        { rank: '4', suit: 'd' },
+        { rank: '6', suit: 's' },
+        { rank: '6', suit: 'h' },
+        { rank: '8', suit: 'c' },
+      ])
+    })
+    test('Big Blind hole cards [3h Ah 6c Qd] set from Mucks action', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      const bb = state.players.find(p => p.position === 'Big Blind')
+      expect(bb?.holeCards).toEqual([
+        { rank: '3', suit: 'h' },
+        { rank: 'A', suit: 'h' },
+        { rank: '6', suit: 'c' },
+        { rank: 'Q', suit: 'd' },
+      ])
+    })
+    test('board is [3s 8s 8d Ad 5c]', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      expect(state.communityCards).toEqual([
+        { rank: '3', suit: 's' },
+        { rank: '8', suit: 's' },
+        { rank: '8', suit: 'd' },
+        { rank: 'A', suit: 'd' },
+        { rank: '5', suit: 'c' },
+      ])
+    })
+  })
+
+  describe('hand #4899120599 (multi-street, all-in river, return_bet)', () => {
+    const hand = hands.find(h => h.handId === '4899120599')!
+
+    test('found', () => expect(hand).toBeDefined())
+    test('ME is Small Blind', () => {
+      const me = hand.players.find(p => p.isMe)
+      expect(me?.position).toBe('Small Blind')
+    })
+    test('board is [Qc 6h Jh 5h 7d]', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      expect(state.communityCards).toEqual([
+        { rank: 'Q', suit: 'c' },
+        { rank: '6', suit: 'h' },
+        { rank: 'J', suit: 'h' },
+        { rank: '5', suit: 'h' },
+        { rank: '7', suit: 'd' },
+      ])
+    })
+    test('final pot is 27.10 (multi-street + all-in + return_bet applied)', () => {
+      const state = computeHandState(hand, hand.actions.length - 1)
+      expect(state.pot).toBeCloseTo(27.10, 2)
+    })
+    test('Big Blind hole cards [Th 8s 9h 6s]', () => {
+      const state = computeHandState(hand, hand.initialStep)
+      const bb = state.players.find(p => p.position === 'Big Blind')
+      expect(bb?.holeCards).toEqual([
+        { rank: 'T', suit: 'h' },
+        { rank: '8', suit: 's' },
+        { rank: '9', suit: 'h' },
+        { rank: '6', suit: 's' },
+      ])
+    })
+  })
+})
+
+describe('analyzeHand – flop c-bet & multiway spots (PLO data)', () => {
+  const hands = parseHandHistories(hhPlo)
+  const byId = (id: string) => analyzeHand(hands.find(h => h.handId === id)!)
+
+  test('#4899120324: hero is PFR, c-bets flop IP (checked to)', () => {
+    const a = byId('4899120324')
+    expect(a.potType).toBe('srp')
+    expect(a.heroIsPfr).toBe(true)
+    expect(a.heroFlopCbetOpportunity).toBe(true)
+    expect(a.heroFlopCbet).toBe(true)
+    expect(a.flopCbet?.inPosition).toBe(true)
+    expect(a.multiwayPostflop).toBe(false)
+  })
+
+  test('#4899120986: hero is PFR, c-bets flop OOP (first to act)', () => {
+    const a = byId('4899120986')
+    expect(a.heroIsPfr).toBe(true)
+    expect(a.heroFlopCbet).toBe(true)
+    expect(a.flopCbet?.inPosition).toBe(false)
+  })
+
+  test('#4899121341: hero is PFR, has opportunity but checks back (no c-bet)', () => {
+    const a = byId('4899121341')
+    expect(a.heroIsPfr).toBe(true)
+    expect(a.heroFlopCbetOpportunity).toBe(true)
+    expect(a.heroFlopCbet).toBe(false)
+  })
+
+  test('#4899119287: villain is PFR, hero folded preflop', () => {
+    const a = byId('4899119287')
+    expect(a.heroIsPfr).toBe(false)
+    expect(a.heroFlopCbetOpportunity).toBe(false)
+    expect(a.pfrSeat).toBe(1) // Dealer
+    expect(a.flopCbet?.opportunity).toBe(true) // the Dealer (PFR) had the opp
+    expect(a.flopCbet?.took).toBe(false)       // …and checked back
+  })
+
+  test('walk / unraised pots have no PFR and no flop c-bet', () => {
+    const a = byId('4899120263') // folds around, BB wins, no flop
+    expect(a.pfrSeat).toBe(null)
+    expect(a.flopCbet).toBe(null)
   })
 })

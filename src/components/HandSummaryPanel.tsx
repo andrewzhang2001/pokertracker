@@ -58,7 +58,7 @@ export default function HandSummaryPanel({
   const someSelected = selected.size > 0
 
   return (
-    <div className="w-52 border-r border-gray-800 flex flex-col bg-black/30 overflow-hidden shrink-0">
+    <div className="w-60 border-r border-gray-800 flex flex-col bg-black/30 overflow-hidden shrink-0">
       {/* Header */}
       <div className="flex items-center justify-between px-2 py-2 border-b border-gray-800 gap-2 shrink-0">
         <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-400 select-none">
@@ -95,7 +95,7 @@ export default function HandSummaryPanel({
           return (
             <div
               key={s.index}
-              className={`flex items-center gap-1.5 px-2 py-1.5 cursor-pointer border-b border-gray-800/50 hover:bg-white/5 transition-colors ${isActive ? 'bg-yellow-500/10' : ''}`}
+              className={`flex items-center gap-1 px-2 py-1.5 cursor-pointer border-b border-gray-800/50 hover:bg-white/5 transition-colors ${isActive ? 'bg-yellow-500/10' : ''}`}
               onClick={() => onClickHand(s.index)}
             >
               <input

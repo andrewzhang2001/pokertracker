@@ -33,6 +33,7 @@ export interface ParsedHand {
   handId: string
   tableId: string
   date: string
+  gameType: string       // e.g. "HOLDEM No Limit", "OMAHA Pot Limit"
   players: PlayerInfo[]
   bigBlind: number
   actions: HandAction[]
