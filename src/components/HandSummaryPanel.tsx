@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import { computeHandState } from '../lib/computeHandState'
 import { analyzeHand } from '../lib/analyzeHand'
@@ -55,6 +55,26 @@ export default function HandSummaryPanel({
   const allSelected = hands.length > 0 && selected.size === hands.length
   const someSelected = selected.size > 0
 
+  // Track scroll position so we can show fade/chevron indicators instead of a
+  // scrollbar (hidden via .no-scrollbar).
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [canScrollUp, setCanScrollUp] = useState(false)
+  const [canScrollDown, setCanScrollDown] = useState(false)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const update = () => {
+      setCanScrollUp(el.scrollTop > 1)
+      setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 1)
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => { el.removeEventListener('scroll', update); ro.disconnect() }
+  }, [summaries.length])
+
   return (
     <div className="w-60 border-r border-gray-800 flex flex-col bg-black/30 overflow-hidden shrink-0">
       {/* Header */}
@@ -84,7 +104,8 @@ export default function HandSummaryPanel({
       </div>
 
       {/* Rows */}
-      <div className="overflow-y-auto flex-1">
+      <div className="relative flex-1 min-h-0">
+        <div ref={scrollRef} className="absolute inset-0 overflow-y-auto no-scrollbar">
         {summaries.map(s => {
           const isActive = s.index === handIndex
           const isChecked = selected.has(s.index)
@@ -118,6 +139,18 @@ export default function HandSummaryPanel({
             </div>
           )
         })}
+        </div>
+
+        {/* Top fade — shown when there are hands scrolled above */}
+        <div
+          className={`pointer-events-none absolute top-0 left-0 right-0 h-6 bg-gradient-to-b from-[#16242f] to-transparent transition-opacity ${canScrollUp ? 'opacity-100' : 'opacity-0'}`}
+        />
+        {/* Bottom fade + chevron — shown when there's more below (i.e. not at end) */}
+        <div
+          className={`pointer-events-none absolute bottom-0 left-0 right-0 h-7 bg-gradient-to-t from-[#16242f] to-transparent flex items-end justify-center pb-0.5 transition-opacity ${canScrollDown ? 'opacity-100' : 'opacity-0'}`}
+        >
+          <span className="text-gray-400 text-xs leading-none">▾</span>
+        </div>
       </div>
     </div>
   )
