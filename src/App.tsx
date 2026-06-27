@@ -4,7 +4,7 @@ import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
-import { RFI_POSITIONS } from './lib/reports'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, type ReportSel } from './lib/reports'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
@@ -13,24 +13,37 @@ type View = 'landing' | 'import' | 'database' | 'reports'
 type VpipFilter = 'all' | 'yes' | 'no'
 
 // --- Routing: the URL path is the source of truth for which view shows. ---
-// /  /import  /database  /reports  /reports/<position>
+// /  /import  /database  /reports  /reports/rfi/<pos>  /reports/vsrfi/<def>/<opener>
 function parseView(p: string): View {
   if (p === '/database') return 'database'
   if (p.startsWith('/reports')) return 'reports'
   if (p === '/import') return 'import'
   return 'landing'
 }
-function parseReportPosition(p: string): string | null {
-  const m = p.match(/^\/reports\/([a-z0-9]+)/i)
-  if (!m) return null
-  const pos = m[1].toUpperCase()
-  return (RFI_POSITIONS as readonly string[]).includes(pos) ? pos : null
+function parseReportSel(p: string): ReportSel | null {
+  let m = p.match(/^\/reports\/rfi\/([a-z0-9]+)/i)
+  if (m) {
+    const pos = m[1].toUpperCase()
+    return (RFI_POSITIONS as readonly string[]).includes(pos) ? { type: 'rfi', pos } : null
+  }
+  m = p.match(/^\/reports\/vsrfi\/([a-z]+)\/([a-z0-9]+)/i)
+  if (m) {
+    const defender = m[1].toUpperCase(), opener = m[2].toUpperCase()
+    if ((VS_RFI_DEFENDERS as readonly string[]).includes(defender) && openersFor(defender).includes(opener))
+      return { type: 'vsrfi', defender, opener }
+  }
+  return null
+}
+function reportUrl(sel: ReportSel): string {
+  return sel.type === 'rfi'
+    ? `/reports/rfi/${sel.pos.toLowerCase()}`
+    : `/reports/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
 }
 
 export default function App() {
   const [path, setPath] = useState(() => window.location.pathname)
   const view = parseView(path)
-  const reportPosition = parseReportPosition(path)
+  const reportSel = parseReportSel(path)
 
   function navigate(to: string, replace = false) {
     if (replace) { history.replaceState(null, '', to); setPath(to); return }
@@ -290,14 +303,12 @@ export default function App() {
     }
     if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
-    if (reportPosition === null) {
-      return <ReportsMenu hands={reportHands} onOpen={pos => navigate('/reports/' + pos.toLowerCase())} onBack={() => navigate('/')} />
+    if (reportSel === null) {
+      return <ReportsMenu hands={reportHands} onOpen={sel => navigate(reportUrl(sel))} onBack={() => navigate('/')} />
     }
     return (
       <ReportsView
-        hands={reportHands}
-        position={reportPosition}
-        onChangePosition={pos => navigate('/reports/' + pos.toLowerCase())}
+        result={buildReport(reportHands, reportSel)}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate('/reports')}
       />

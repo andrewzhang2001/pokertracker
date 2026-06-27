@@ -6,7 +6,7 @@ import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
-import { rfiSpots, rfiReport } from '../reports'
+import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport } from '../reports'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -466,6 +466,36 @@ describe('RFI reports (population, by position)', () => {
     const sample = [get('4899119287')] // Dealer ~136bb
     expect(rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: true }).total).toBe(1)
     expect(rfiReport(sample, { position: 'BU', minBB: 200, excludeHero: true }).total).toBe(0)
+  })
+
+  // ---- vs-RFI ----
+  test('vsRfiSpots: BB calls a pure Button RFI', () => {
+    // #4899119287: BU opens 3.4bb, SB[ME] folds, BB calls → both are vs-RFI spots
+    const spots = vsRfiSpots(get('4899119287'))
+    const bb = spots.find(s => s.defenderPos === 'BB')
+    expect(bb).toBeDefined()
+    expect(bb!.openerPos).toBe('BU')
+    expect(bb!.action).toBe('call')
+  })
+
+  test('vsRfiReport BB vs BU counts the call', () => {
+    const r = vsRfiReport([get('4899119287')], { defender: 'BB', opener: 'BU', minBB: 75, excludeHero: true })
+    expect(r.counts.call).toBe(1)
+    expect(r.total).toBe(1)
+  })
+
+  test('a cold-call in front ends the pure-RFI chain (later folders not counted)', () => {
+    // #4899119835: CO opens, BU cold-calls → only BU is a vs-RFI spot; SB/BB folds after don't count
+    const spots = vsRfiSpots(get('4899119835'))
+    expect(spots.length).toBe(1)
+    expect(spots[0].defenderPos).toBe('BU')
+    expect(spots[0].openerPos).toBe('CO')
+    expect(spots[0].action).toBe('call')
+  })
+
+  test('opens below the RFI size threshold are excluded', () => {
+    // #4899119287 open is 3.4bb; requiring >=5bb yields no vs-RFI spots
+    expect(vsRfiSpots(get('4899119287'), 5.0).length).toBe(0)
   })
 })
 
