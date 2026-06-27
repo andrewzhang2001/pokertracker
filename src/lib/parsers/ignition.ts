@@ -16,6 +16,29 @@ function parseAmt(s: string): number {
   return parseFloat(s.replace(/,/g, ''))
 }
 
+// Ignition prints a wall-clock time with no timezone (e.g. "2026-06-24 19:21:58")
+// in US Eastern Time. We convert ET -> UTC epoch ms, handling EDT/EST (DST)
+// automatically via the IANA tz database (deterministic across machines, no lib).
+const ET_ZONE = 'America/New_York'
+const etFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: ET_ZONE, hourCycle: 'h23',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+})
+
+function parsePlayedAt(date: string): number | null {
+  const m = date.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/)
+  if (!m) return null
+  const [, y, mo, d, h, mi, s] = m.map(Number) as unknown as number[]
+  // Interpret the wall-clock as if it were UTC, see what ET clock that instant
+  // shows, and correct by the resulting offset (covers both EDT and EST).
+  const guess = Date.UTC(y, mo - 1, d, h, mi, s)
+  const parts = etFormatter.formatToParts(new Date(guess))
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value)
+  const asET = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'))
+  return guess - (asET - guess) // guess - offset, where offset = asET - guess (negative for ET)
+}
+
 function bb(amount: number, bigBlind: number): string {
   const v = amount / bigBlind
   return (Number.isInteger(v) ? v : parseFloat(v.toFixed(2))) + 'bb'
@@ -128,6 +151,7 @@ function parseHand(text: string): ParsedHand | null {
   // "Ignition Hand #ID TBL#TID GAME TYPE - date"
   const gameTypeM = lines[0].match(/TBL#\w+ (.+?) - \d{4}-\d{2}-\d{2}/)
   const gameType = gameTypeM ? gameTypeM[1].trim() : ''
+  const playedAt = parsePlayedAt(date)
 
   const players: PlayerInfo[] = []
   let i = 1
@@ -145,12 +169,16 @@ function parseHand(text: string): ParsedHand | null {
   if (!players.length) return null
 
   let bigBlind = 1
+  let smallBlind = 0
   for (let j = i; j < lines.length; j++) {
     const ci = lines[j].indexOf(' : ')
     if (ci === -1) continue
     const actionText = lines[j].slice(ci + 3).trim()
-    const m = actionText.match(/^Big blind \$?([\d,.]+)/i)
-    if (m) { bigBlind = parseAmt(m[1]); break }
+    const sbm = actionText.match(/^Small blind \$?([\d,.]+)/i)
+    if (sbm) smallBlind = parseAmt(sbm[1])
+    // SB is posted before BB, so by the time we hit BB we have both.
+    const bbm = actionText.match(/^Big blind \$?([\d,.]+)/i)
+    if (bbm) { bigBlind = parseAmt(bbm[1]); break }
   }
 
   let currentStreet: Street = 'preflop'
@@ -191,7 +219,10 @@ function parseHand(text: string): ParsedHand | null {
     if (actions[k].type === 'deal_hole') { initialStep = k; break }
   }
 
-  return { handId, tableId, date, gameType, players, bigBlind, actions, initialStep, rawText: text }
+  return {
+    handId, tableId, site: 'ignition', date, playedAt, gameType, currency: 'USD',
+    players, smallBlind, bigBlind, actions, initialStep, rawText: text,
+  }
 }
 
 export function detect(text: string): boolean {

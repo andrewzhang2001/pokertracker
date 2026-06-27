@@ -46,11 +46,12 @@ interface Props {
   onShareSelected: () => void
   sharingSelected: boolean
   copiedSelected: boolean
+  enableShare?: boolean
 }
 
 export default function HandSummaryPanel({
   hands, handIndex, handNotes, selected, onSelect, onSelectAll, onClickHand,
-  onShareSelected, sharingSelected, copiedSelected,
+  onShareSelected, sharingSelected, copiedSelected, enableShare = true,
 }: Props) {
   const summaries = useMemo(() => hands.map((h, i) => computeSummary(h, i)), [hands])
 
@@ -70,17 +71,19 @@ export default function HandSummaryPanel({
           />
           {selected.size > 0 ? `${selected.size} / ${hands.length}` : `${hands.length} hands`}
         </label>
-        <button
-          onClick={onShareSelected}
-          disabled={!someSelected || sharingSelected}
-          className={`text-xs px-2 py-1 rounded-full border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-            copiedSelected
-              ? 'border-green-600 text-green-400 bg-green-600/10'
-              : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
-          }`}
-        >
-          {sharingSelected ? '…' : copiedSelected ? 'Copied!' : 'Share'}
-        </button>
+        {enableShare && (
+          <button
+            onClick={onShareSelected}
+            disabled={!someSelected || sharingSelected}
+            className={`text-xs px-2 py-1 rounded-full border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              copiedSelected
+                ? 'border-green-600 text-green-400 bg-green-600/10'
+                : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
+            }`}
+          >
+            {sharingSelected ? '…' : copiedSelected ? 'Copied!' : 'Share'}
+          </button>
+        )}
       </div>
 
       {/* Rows */}

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
+import { dedupeAndSort } from '../mergeHands'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -259,6 +260,17 @@ describe('hh_plo.txt – PLO cash game ($0.10/$0.25)', () => {
     expect(hands[0].bigBlind).toBe(0.25)
   })
 
+  test('canonical metadata: site, blinds, currency, epoch playedAt', () => {
+    const h = hands[0]
+    expect(h.site).toBe('ignition')
+    expect(h.smallBlind).toBe(0.10)
+    expect(h.bigBlind).toBe(0.25)
+    expect(h.currency).toBe('USD')
+    // header "2026-06-24 19:21:58" is US Eastern. June → EDT (UTC-4),
+    // so the true epoch is 23:21:58 UTC.
+    expect(h.playedAt).toBe(Date.UTC(2026, 5, 24, 23, 21, 58))
+  })
+
   describe('hand #4899119185 (first hand – 4 hole cards for PLO)', () => {
     const hand = hands.find(h => h.handId === '4899119185')!
 
@@ -388,6 +400,29 @@ describe('hh_plo.txt – PLO cash game ($0.10/$0.25)', () => {
         { rank: '6', suit: 's' },
       ])
     })
+  })
+})
+
+describe('dedupeAndSort – multi-file import merging', () => {
+  const single = parseHandHistories(hhPlo)
+
+  test('drops duplicate hand ids when the same file is imported twice', () => {
+    const doubled = parseHandHistories(hhPlo + '\n\n' + hhPlo)
+    expect(doubled.length).toBe(single.length * 2)        // raw parse has dupes
+    expect(dedupeAndSort(doubled).length).toBe(single.length) // merged removes them
+  })
+
+  test('orders merged hands chronologically by playedAt', () => {
+    const merged = dedupeAndSort(parseHandHistories(hhPlo))
+    const times = merged.map(h => h.playedAt ?? Infinity)
+    const sorted = [...times].sort((a, b) => a - b)
+    expect(times).toEqual(sorted)
+  })
+
+  test('mixing stakes/games is preserved per-hand (no global conflict)', () => {
+    // every hand keeps its own blinds/gameType after merging
+    const merged = dedupeAndSort(parseHandHistories(hhPlo))
+    expect(merged.every(h => h.bigBlind === 0.25 && h.gameType === 'OMAHA Pot Limit')).toBe(true)
   })
 })
 

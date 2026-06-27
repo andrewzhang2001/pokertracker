@@ -1,284 +1,256 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
-import { computeHandState } from './lib/computeHandState'
-import { createShareLink, loadShareById, decodeLegacyShare } from './lib/shareUrl'
+import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
+import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
+import { dedupeAndSort } from './lib/mergeHands'
 import type { ParsedHand } from './lib/types'
-import PokerTable from './components/PokerTable'
-import HandSummaryPanel from './components/HandSummaryPanel'
+import HandReplayer from './components/HandReplayer'
+
+type View = 'landing' | 'import' | 'database'
 
 export default function App() {
-  const [hands, setHands] = useState<ParsedHand[]>([])
-  const [handIndex, setHandIndex] = useState(0)
-  const [stepIndex, setStepIndex] = useState(-1)
-  const [showOpponentCards, setShowOpponentCards] = useState(true)
+  const [view, setView] = useState<View>('landing')
+
+  // import view state
+  const [importHands, setImportHands] = useState<ParsedHand[]>([])
+  const [importNotes, setImportNotes] = useState<string[]>([])
   const [pasteText, setPasteText] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [handNotes, setHandNotes] = useState<string[]>([])
-  const [sharing, setSharing] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [selectedHandIndices, setSelectedHandIndices] = useState<Set<number>>(new Set())
-  const [sharingSelected, setSharingSelected] = useState(false)
-  const [copiedSelected, setCopiedSelected] = useState(false)
+  const [exportState, setExportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle')
+  const [exportMsg, setExportMsg] = useState('')
 
-  const hand = hands[handIndex] ?? null
+  // database view state
+  const [dbHands, setDbHands] = useState<ParsedHand[]>([])
+  const [dbNotes, setDbNotes] = useState<string[]>([])
+  const [dbStatus, setDbStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [dbError, setDbError] = useState<string | null>(null)
 
-  const state = useMemo(
-    () => (hand ? computeHandState(hand, stepIndex) : null),
-    [hand, stepIndex],
-  )
-
-  // Decode shared link on first load — supports both #id= (new) and #h= (legacy)
+  // Decode shared link on first load — supports #id= (new) and #h= (legacy)
   useEffect(() => {
     const hash = window.location.hash
     let promise: Promise<{ rawText: string; handNotes: string[] }> | null = null
     if (hash.startsWith('#id=')) promise = loadShareById(hash.slice(4))
     else if (hash.startsWith('#h=')) promise = decodeLegacyShare(hash.slice(3))
     if (!promise) return
-    promise.then(({ rawText, handNotes: hn }) => {
+    promise.then(({ rawText, handNotes }) => {
       const parsed = parseHandHistories(rawText)
       if (parsed.length) {
-        setHands(parsed)
-        setHandIndex(0)
-        setStepIndex(parsed[0].initialStep)
-        const notes = Array.from({ length: parsed.length }, (_, i) => hn[i] ?? '')
-        setHandNotes(notes)
+        setImportHands(parsed)
+        setImportNotes(Array.from({ length: parsed.length }, (_, i) => handNotes[i] ?? ''))
+        setView('import')
       }
     }).catch(() => {})
   }, [])
 
   function loadText(text: string) {
-    const parsed = parseHandHistories(text)
+    const parsed = dedupeAndSort(parseHandHistories(text))
     if (!parsed.length) {
       setError(`No hands parsed. ${diagnose(text)}`)
-    } else {
-      setError(null)
-      setHands(parsed)
-      setHandIndex(0)
-      setStepIndex(parsed[0].initialStep)
-      setHandNotes(new Array(parsed.length).fill(''))
-      setSelectedHandIndices(new Set())
-      history.replaceState(null, '', window.location.pathname)
+      return
     }
-  }
-
-  function resetApp() {
-    setHands([])
-    setPasteText('')
-    setHandNotes([])
-    setSelectedHandIndices(new Set())
+    setError(null)
+    setImportHands(parsed)
+    setImportNotes(new Array(parsed.length).fill(''))
+    setExportState('idle')
     history.replaceState(null, '', window.location.pathname)
   }
 
-  function jumpToHand(idx: number) {
-    setHandIndex(idx)
-    setStepIndex(hands[idx].initialStep)
-  }
-
-  function updateNote(idx: number, value: string) {
-    setHandNotes(prev => {
-      const next = [...prev]
-      next[idx] = value
-      return next
-    })
-  }
-
-  function toggleSelectHand(idx: number, checked: boolean) {
-    setSelectedHandIndices(prev => {
-      const next = new Set(prev)
-      if (checked) next.add(idx); else next.delete(idx)
-      return next
-    })
-  }
-
-  function toggleSelectAll() {
-    if (selectedHandIndices.size === hands.length) {
-      setSelectedHandIndices(new Set())
-    } else {
-      setSelectedHandIndices(new Set(hands.map((_, i) => i)))
-    }
-  }
-
-  async function shareSelectedHands() {
-    const sorted = [...selectedHandIndices].sort((a, b) => a - b)
-    const rawText = sorted.map(i => hands[i].rawText).join('\n\n')
-    const notes = sorted.map(i => handNotes[i] ?? '')
-    setSharingSelected(true)
+  async function loadFiles(fileList: FileList | null) {
+    if (!fileList || !fileList.length) return
     try {
-      const url = await createShareLink(rawText, notes)
-      await navigator.clipboard.writeText(url)
-      setCopiedSelected(true)
-      setTimeout(() => setCopiedSelected(false), 2000)
-    } finally {
-      setSharingSelected(false)
+      const texts = await Promise.all(Array.from(fileList).map(f => f.text()))
+      loadText(texts.join('\n\n'))
+    } catch (e) {
+      setError(`Couldn't read file(s): ${String((e as Error).message ?? e)}`)
     }
   }
 
-  const goHand = useCallback((delta: number) => {
-    const next = Math.max(0, Math.min(hands.length - 1, handIndex + delta))
-    if (next === handIndex) return
-    setHandIndex(next)
-    setStepIndex(hands[next].initialStep)
-  }, [hands, handIndex])
+  function backToLanding() {
+    setView('landing')
+    history.replaceState(null, '', window.location.pathname)
+  }
 
-  const goStep = useCallback((delta: number) => {
-    if (!hand) return
-    setStepIndex(i => Math.max(-1, Math.min(hand.actions.length - 1, i + delta)))
-  }, [hand])
+  function resetImport() {
+    setImportHands([])
+    setPasteText('')
+    setImportNotes([])
+    setExportState('idle')
+    setView('landing')
+    history.replaceState(null, '', window.location.pathname)
+  }
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLTextAreaElement) return
-      if (e.key === 'ArrowRight') goStep(1)
-      else if (e.key === 'ArrowLeft') goStep(-1)
-      else if (e.key === 'ArrowUp') { e.preventDefault(); goHand(-1) }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); goHand(1) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [goStep, goHand])
-
-  async function copyShareLink() {
-    if (!hand) return
-    setSharing(true)
+  async function openDatabase() {
+    setView('database')
+    setDbStatus('loading')
+    setDbError(null)
     try {
-      const url = await createShareLink(hand.rawText, [handNotes[handIndex] ?? ''])
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } finally {
-      setSharing(false)
+      const { hands, notes } = await fetchHandsFromDb()
+      setDbHands(hands)
+      setDbNotes(notes)
+      setDbStatus('idle')
+    } catch (e) {
+      setDbError(String((e as Error).message ?? e))
+      setDbStatus('error')
     }
   }
 
-  if (!hands.length) {
+  async function handleExport() {
+    setExportState('busy')
+    try {
+      const n = await exportHandsToDb(importHands, importNotes)
+      setExportState('done')
+      setExportMsg(`Saved ${n}`)
+      setTimeout(() => setExportState('idle'), 2500)
+    } catch (e) {
+      setExportState('error')
+      setExportMsg(String((e as Error).message ?? e))
+      setTimeout(() => setExportState('idle'), 3500)
+    }
+  }
+
+  // ---- Landing ----
+  if (view === 'landing') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-8">
+        <h1 className="text-4xl font-bold text-white">Poker Hand Tracker</h1>
+        <div className="flex flex-col sm:flex-row gap-6">
+          <button
+            onClick={openDatabase}
+            className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
+          >
+            <span className="text-3xl">🗄️</span>
+            <span className="text-lg font-semibold text-white">View Database</span>
+            <span className="text-xs text-gray-500">Browse and filter your saved hands</span>
+          </button>
+          <button
+            onClick={() => { setView('import'); setError(null) }}
+            className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
+          >
+            <span className="text-3xl">📥</span>
+            <span className="text-lg font-semibold text-white">Import</span>
+            <span className="text-xs text-gray-500">Paste a hand history to review, then export to your database</span>
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ---- Database ----
+  if (view === 'database') {
+    if (dbStatus === 'loading') {
+      return <CenteredMessage title="Loading hands…" onBack={backToLanding} />
+    }
+    if (dbStatus === 'error') {
+      return <CenteredMessage title="Couldn't load hands" detail={dbError ?? ''} onBack={backToLanding} />
+    }
+    if (!dbHands.length) {
+      return <CenteredMessage title="No hands saved yet" detail="Import some hands and export them to your database." onBack={backToLanding} />
+    }
+    return (
+      <HandReplayer
+        key={`db-${dbHands.length}`}
+        hands={dbHands}
+        handNotes={dbNotes}
+        onUpdateNote={(idx, value) => setDbNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
+        onBack={backToLanding}
+        backLabel="← Home"
+        topBarExtra={<span className="text-xs text-gray-600">Filters coming soon</span>}
+      />
+    )
+  }
+
+  // ---- Import ----
+  if (!importHands.length) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
-        <h1 className="text-3xl font-bold text-white">Poker Hand Tracker</h1>
-        <p className="text-gray-400">Paste your Ignition hand history below (NLHE & PLO supported)</p>
+        <h1 className="text-3xl font-bold text-white">Import hands</h1>
+        <p className="text-gray-400">Upload or paste your Ignition hand history (NLHE &amp; PLO supported)</p>
+
+        <label className="w-full max-w-2xl cursor-pointer">
+          <input
+            type="file"
+            accept=".txt,text/plain"
+            multiple
+            className="hidden"
+            onChange={e => { loadFiles(e.target.files); e.target.value = '' }}
+          />
+          <div className="border-2 border-dashed border-gray-700 hover:border-yellow-500 rounded-lg p-6 text-center text-sm text-gray-400 hover:text-yellow-400 transition-colors">
+            📄 Choose hand history file(s) — you can select multiple
+          </div>
+        </label>
+
+        <div className="text-xs text-gray-600">— or paste below —</div>
+
         <textarea
-          className="w-full max-w-2xl h-64 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-yellow-500 resize-none font-mono"
+          className="w-full max-w-2xl h-48 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-yellow-500 resize-none font-mono"
           placeholder="Paste hand history here..."
           value={pasteText}
           onChange={e => setPasteText(e.target.value)}
         />
         {error && <p className="text-red-400 text-sm">{error}</p>}
-        <button
-          onClick={() => loadText(pasteText)}
-          disabled={!pasteText.trim()}
-          className="px-6 py-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed text-black font-semibold rounded-lg transition-colors"
-        >
-          Load hands
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={backToLanding}
+            className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
+          >
+            ← Home
+          </button>
+          <button
+            onClick={() => loadText(pasteText)}
+            disabled={!pasteText.trim()}
+            className="px-6 py-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed text-black font-semibold rounded-lg transition-colors"
+          >
+            Load hands
+          </button>
+        </div>
       </div>
     )
   }
 
-  const totalSteps = hand ? hand.actions.length : 0
-  const currentDesc = state?.lastAction?.desc ?? '—'
+  const exportBtn = (
+    <button
+      onClick={handleExport}
+      disabled={exportState === 'busy'}
+      title={exportState === 'error' ? exportMsg : undefined}
+      className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
+        exportState === 'done'
+          ? 'border-green-600 text-green-400 bg-green-600/10'
+          : exportState === 'error'
+          ? 'border-red-600 text-red-400 bg-red-600/10'
+          : 'border-yellow-600 text-yellow-400 bg-yellow-600/10 hover:bg-yellow-600/20'
+      }`}
+    >
+      {exportState === 'busy' ? 'Saving…'
+        : exportState === 'done' ? exportMsg
+        : exportState === 'error' ? 'Export failed'
+        : `Export ${importHands.length} → Database`}
+    </button>
+  )
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={resetApp}
-            className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors"
-          >
-            ← Back
-          </button>
-          <span className="text-gray-400">Hand</span>
-          <div className="flex gap-1">
-            <button onClick={() => goHand(-1)} disabled={handIndex === 0}
-              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-xs">▲</button>
-            <button onClick={() => goHand(1)} disabled={handIndex === hands.length - 1}
-              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-xs">▼</button>
-          </div>
-          <span className="text-white font-medium">{handIndex + 1} / {hands.length}</span>
-          {hand && <span className="text-gray-600 text-xs hidden sm:inline">{hand.date}</span>}
-          {hand?.gameType && <span className="text-gray-700 text-xs hidden sm:inline">{hand.gameType}</span>}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowOpponentCards(v => !v)}
-            className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-              showOpponentCards
-                ? 'border-yellow-500 text-yellow-400 bg-yellow-500/10'
-                : 'border-gray-600 text-gray-400'
-            }`}
-          >
-            {showOpponentCards ? 'Cards: on' : 'Cards: off'}
-          </button>
-          <button
-            onClick={copyShareLink}
-            disabled={sharing}
-            className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
-              copied
-                ? 'border-green-600 text-green-400 bg-green-600/10'
-                : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
-            }`}
-          >
-            {sharing ? '…' : copied ? 'Copied!' : 'Share'}
-          </button>
-        </div>
-      </div>
+    <HandReplayer
+      key={`import-${importHands.length}`}
+      hands={importHands}
+      handNotes={importNotes}
+      onUpdateNote={(idx, value) => setImportNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
+      onBack={resetImport}
+      backLabel="← Home"
+      topBarExtra={exportBtn}
+    />
+  )
+}
 
-      {/* Main content: summary panel + table */}
-      <div className="flex-1 flex overflow-hidden">
-        <HandSummaryPanel
-          hands={hands}
-          handIndex={handIndex}
-          handNotes={handNotes}
-          selected={selectedHandIndices}
-          onSelect={toggleSelectHand}
-          onSelectAll={toggleSelectAll}
-          onClickHand={jumpToHand}
-          onShareSelected={shareSelectedHands}
-          sharingSelected={sharingSelected}
-          copiedSelected={copiedSelected}
-        />
-        <div className="flex-1 min-h-0 min-w-0 px-4 py-2">
-          {hand && state && (
-            <PokerTable hand={hand} state={state} showOpponentCards={showOpponentCards} />
-          )}
-        </div>
-      </div>
-
-      {/* Bottom bar */}
-      {hand && (
-        <div className="border-t border-gray-800 bg-black/50 px-4 py-2">
-          <div className="flex items-center gap-3 max-w-3xl mx-auto">
-            <button
-              onClick={() => goStep(-1)}
-              disabled={stepIndex <= -1}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-sm font-bold"
-            >
-              ←
-            </button>
-            <div className="flex-1 text-center">
-              <span className="text-white text-sm">{currentDesc}</span>
-              <span className="text-gray-600 text-xs ml-2">
-                {stepIndex + 1} / {totalSteps}
-              </span>
-            </div>
-            <button
-              onClick={() => goStep(1)}
-              disabled={stepIndex >= totalSteps - 1}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-sm font-bold"
-            >
-              →
-            </button>
-          </div>
-          <textarea
-            className="w-full max-w-3xl mx-auto block mt-2 bg-transparent text-gray-300 text-sm placeholder-gray-700 resize-none focus:outline-none focus:placeholder-gray-600 transition-colors"
-            rows={2}
-            placeholder="Notes for this hand…"
-            value={handNotes[handIndex] ?? ''}
-            onChange={e => updateNote(handIndex, e.target.value)}
-          />
-          <p className="text-center text-gray-700 text-xs mt-1">← → to step through actions · ↑ ↓ to change hand</p>
-        </div>
-      )}
+function CenteredMessage({ title, detail, onBack }: { title: string; detail?: string; onBack: () => void }) {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
+      <h1 className="text-2xl font-bold text-white">{title}</h1>
+      {detail && <p className="text-gray-400 text-sm max-w-md text-center">{detail}</p>}
+      <button
+        onClick={onBack}
+        className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
+      >
+        ← Home
+      </button>
     </div>
   )
 }

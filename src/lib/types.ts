@@ -32,9 +32,13 @@ export interface HandAction {
 export interface ParsedHand {
   handId: string
   tableId: string
-  date: string
+  site: string           // 'ignition' | 'pokernow' | ... (provenance)
+  date: string           // raw header date string, as printed by the site
+  playedAt: number | null // epoch ms (deterministic via Date.UTC); null if unparseable
   gameType: string       // e.g. "HOLDEM No Limit", "OMAHA Pot Limit"
+  currency: string       // 'USD' | 'play' | ...
   players: PlayerInfo[]
+  smallBlind: number
   bigBlind: number
   actions: HandAction[]
   initialStep: number    // step index to start at (after hole cards dealt)
