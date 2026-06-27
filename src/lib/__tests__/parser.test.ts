@@ -6,9 +6,9 @@ import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
-import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport } from '../reports'
+import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport, leakProfile } from '../reports'
 import { ploCombo } from '../ploCombo'
-import type { ParsedCard } from '../types'
+import type { ParsedCard, HandAction, ParsedHand } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -499,6 +499,33 @@ describe('RFI reports (population, by position)', () => {
     // #4899119287 open is 3.4bb; requiring >=5bb yields no vs-RFI spots
     expect(vsRfiSpots(get('4899119287'), 5.0).length).toBe(0)
   })
+
+  test('vs-RFI requires BOTH players 75bb+ (short opener excluded)', () => {
+    // synthetic 3-handed: BU opens 3bb but is only 50bb deep; BB defends 100bb
+    const mkAction = (type: string, seatNumber: number, amount?: number): HandAction =>
+      ({ type: type as HandAction['type'], seatNumber, amount, street: 'preflop', desc: '' })
+    const hand = {
+      handId: 'synthetic', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 50 },   // BU, short opener
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: false, startingStack: 100 },
+      ],
+      actions: [
+        mkAction('raise', 1, 3), // BU opens to 3bb
+        mkAction('fold', 2),     // SB folds
+        mkAction('call', 3, 2),  // BB calls
+      ],
+    } as ParsedHand
+    const spots = vsRfiSpots(hand)
+    const bb = spots.find(s => s.defenderPos === 'BB')!
+    expect(bb.openerStackBB).toBe(50)
+    // defender is 100bb but opener is only 50bb → excluded at 75bb+
+    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 75, excludeHero: true }).total).toBe(0)
+    // lower the threshold and it counts
+    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 40, excludeHero: true }).total).toBe(1)
+  })
 })
 
 describe('ploCombo – dealt hand → solver combo key', () => {
@@ -525,6 +552,44 @@ describe('ploCombo – dealt hand → solver combo key', () => {
       }
     }
     expect(checked).toBeGreaterThan(50)
+  })
+
+  test('leakProfile maps the two axes to archetypes', () => {
+    expect(leakProfile({ tight: 0, loose: 1, passive: 1, aggressive: 0 })).toMatchObject({ label: 'Loose-Passive', nickname: 'station' })
+    expect(leakProfile({ tight: 1, loose: 0, passive: 1, aggressive: 0 })).toMatchObject({ label: 'Tight-Passive', nickname: 'nit' })
+    expect(leakProfile({ tight: 0, loose: 1, passive: 0, aggressive: 1 })).toMatchObject({ label: 'Loose-Aggressive', nickname: 'maniac' })
+    expect(leakProfile({ tight: 0, loose: 0, passive: 0, aggressive: 0 }).label).toBe('≈ GTO')
+    expect(leakProfile({ tight: 0, loose: 1, passive: 0, aggressive: 0 }).label).toBe('Loose') // one-sided
+  })
+
+  test('raise→fold counts on BOTH axes (loose + aggressive)', () => {
+    const C = (s: string): ParsedCard[] =>
+      s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+    const bbCards = C('Ah Kh Qd Jc')
+    const combo = ploCombo(bbCards)
+    const table = { [combo]: [0, -0.5, -1.0] } // fold best; call -0.5; 3bet -1.0
+    const mk = (type: string, seatNumber: number, amount?: number, cards?: ParsedCard[]): HandAction =>
+      ({ type: type as HandAction['type'], seatNumber, amount, cards, street: 'preflop', desc: '' })
+    const hand = {
+      handId: 'syn2', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: false, startingStack: 100 },
+      ],
+      actions: [
+        mk('deal_hole', 3, undefined, bbCards),
+        mk('raise', 1, 3),  // BU opens (RFI)
+        mk('fold', 2),      // SB folds
+        mk('raise', 3, 9),  // BB 3-bets a hand that should fold
+      ],
+    } as ParsedHand
+    const r = buildReport([hand], { type: 'vsrfi', defender: 'BB', opener: 'BU' }, table)
+    expect(r.ev!.axes.loose).toBeCloseTo(1.0, 5)
+    expect(r.ev!.axes.aggressive).toBeCloseTo(1.0, 5)
+    expect(r.ev!.axes.tight).toBe(0)
+    expect(r.ev!.axes.passive).toBe(0)
   })
 
   test('buildReport computes GTO EV loss end-to-end (BU RFI)', () => {

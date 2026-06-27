@@ -1,13 +1,51 @@
 import { useMemo } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
-  buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
-  type ReportSel, type ReportResult, type ReportBucket,
+  buildReport, leakProfile, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
+  type ReportSel, type ReportResult, type ReportBucket, type EvSummary,
 } from '../lib/reports'
 import PlayingCard from './PlayingCard'
 
 function fmtPct(n: number) {
   return (Number.isInteger(n) ? n : n.toFixed(1)) + '%'
+}
+
+// A diverging meter: left/right segments grow from the center, sized by bb lost.
+function Meter({ leftLabel, leftVal, leftColor, rightLabel, rightVal, rightColor, scale }: {
+  leftLabel: string; leftVal: number; leftColor: string
+  rightLabel: string; rightVal: number; rightColor: string; scale: number
+}) {
+  const lw = (leftVal / scale) * 50
+  const rw = (rightVal / scale) * 50
+  return (
+    <div className="flex items-center gap-2 text-xs my-1">
+      <span className="w-24 text-right text-gray-400">{leftLabel}{leftVal > 0.005 && <span className="text-gray-500"> −{leftVal.toFixed(2)}</span>}</span>
+      <div className="relative flex-1 h-3 rounded bg-gray-800/80">
+        <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-600" />
+        <div className="absolute top-0 bottom-0" style={{ right: '50%', width: `${lw}%`, background: leftColor, borderRadius: '2px 0 0 2px' }} />
+        <div className="absolute top-0 bottom-0" style={{ left: '50%', width: `${rw}%`, background: rightColor, borderRadius: '0 2px 2px 0' }} />
+      </div>
+      <span className="w-24 text-gray-400">{rightLabel}{rightVal > 0.005 && <span className="text-gray-500"> −{rightVal.toFixed(2)}</span>}</span>
+    </div>
+  )
+}
+
+function LeakProfile({ ev }: { ev: EvSummary }) {
+  const { tight, loose, passive, aggressive } = ev.axes
+  const scale = Math.max(tight, loose, passive, aggressive, 0.0001)
+  const { label, nickname } = leakProfile(ev.axes)
+  return (
+    <div className="max-w-md mx-auto mt-3">
+      <div className="text-center text-sm mb-1">
+        <span className="text-gray-400">Profile: </span>
+        <span className="font-semibold text-white">{label}{nickname && ` (${nickname})`}</span>
+      </div>
+      <Meter leftLabel="Tight" leftVal={tight} leftColor="#6b7280" rightLabel="Loose" rightVal={loose} rightColor="#f59e0b" scale={scale} />
+      {ev.aggressionAxis && (
+        <Meter leftLabel="Passive" leftVal={passive} leftColor="#3b82f6" rightLabel="Aggressive" rightVal={aggressive} rightColor="#ef4444" scale={scale} />
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +191,7 @@ export default function ReportsView({ result, onOpenHands, onBack }: Props) {
                   <span className="text-red-400 font-semibold">−{(result.ev.perSpotBb * 100).toFixed(2)} bb/100</span>
                   <span className="text-gray-600"> · total −{result.ev.totalBb.toFixed(1)} bb over {result.ev.spots} spots</span>
                 </div>
+                <LeakProfile ev={result.ev} />
                 {result.ev.directions.length > 0 && (
                   <div className="mt-3">
                     <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 text-center">

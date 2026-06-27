@@ -40,6 +40,12 @@ export interface EvSummary {
   totalBb: number       // total EV lost across spots (bb)
   perSpotBb: number     // average EV lost per spot (bb)
   directions: { label: string; count: number; bbLost: number }[] // sorted by bbLost desc
+  // EV lost on two INDEPENDENT axes (bb) from mistakes; a single mistake can
+  // count on both (e.g. raise→fold is loose AND aggressive):
+  //   VPIP:       tight = folded when should continue; loose = continued when should fold
+  //   Aggression: passive = didn't raise when should; aggressive = raised when should call/fold
+  axes: { tight: number; loose: number; passive: number; aggressive: number }
+  aggressionAxis: boolean // false for RFI (single VPIP axis)
 }
 
 // ---- Shared shapes for the generic report view ----
@@ -93,20 +99,23 @@ export interface RfiSpot {
   position: string
   displayPos: string
   isHero: boolean
-  stackBB: number
+  stackBB: number       // the RFI player's starting stack (bb)
+  bbStackBB: number     // the Big Blind's starting stack (bb) — the key effective stack
   cards: ParsedCard[] | null
   action: RfiAction
 }
 
 export function rfiSpots(hand: ParsedHand): RfiSpot[] {
   const tableSize = hand.players.length
+  const bb = hand.players.find(p => p.position === 'Big Blind')
+  const bbStackBB = bb ? bb.startingStack / hand.bigBlind : Infinity
   const make = (seat: number, action: RfiAction): RfiSpot | null => {
     const p = hand.players.find(pp => pp.seatNumber === seat)
     if (!p) return null
     return {
       handId: hand.handId, seat, position: p.position,
       displayPos: displayPosition(p.position, tableSize),
-      isHero: p.isMe, stackBB: p.startingStack / hand.bigBlind,
+      isHero: p.isMe, stackBB: p.startingStack / hand.bigBlind, bbStackBB,
       cards: cardsFor(hand, seat), action,
     }
   }
@@ -142,7 +151,8 @@ export function rfiReport(
     for (const s of rfiSpots(hand)) {
       if (s.displayPos !== opts.position) continue
       if (opts.excludeHero && s.isHero) continue
-      if (s.stackBB < opts.minBB) continue
+      // both the opener and the BB (the key effective stack) must be 75bb+
+      if (s.stackBB < opts.minBB || s.bbStackBB < opts.minBB) continue
       entries[s.action].push({ handId: s.handId, cards: s.cards, stackBB: s.stackBB, isHero: s.isHero, hand })
     }
   }
@@ -171,7 +181,8 @@ export interface VsRfiSpot {
   defenderPos: string
   openerPos: string
   isHero: boolean
-  stackBB: number
+  stackBB: number          // defender's starting stack (bb)
+  openerStackBB: number    // opener's starting stack (bb)
   cards: ParsedCard[] | null
   action: VsRfiAction
 }
@@ -181,6 +192,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB = RFI_OPEN_MIN_BB): VsRfi
   const playerBy = (seat: number) => hand.players.find(p => p.seatNumber === seat)
 
   let openerPos: string | null = null
+  let openerStackBB = 0
   const spots: VsRfiSpot[] = []
 
   for (const a of hand.actions) {
@@ -195,6 +207,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB = RFI_OPEN_MIN_BB): VsRfi
         const p = playerBy(a.seatNumber)
         if (!p) return []
         openerPos = displayPosition(p.position, tableSize)
+        openerStackBB = p.startingStack / hand.bigBlind
         continue
       }
       return [] // first voluntary action was a limp/check — not a pure RFI
@@ -206,7 +219,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB = RFI_OPEN_MIN_BB): VsRfi
     const mk = (action: VsRfiAction): VsRfiSpot => ({
       handId: hand.handId, defenderSeat: a.seatNumber!, defenderPos: displayPosition(p.position, tableSize),
       openerPos: openerPos!, isHero: p.isMe, stackBB: p.startingStack / hand.bigBlind,
-      cards: cardsFor(hand, a.seatNumber!), action,
+      openerStackBB, cards: cardsFor(hand, a.seatNumber!), action,
     })
     if (a.type === 'fold') { spots.push(mk('fold')); continue }
     if (a.type === 'call') { spots.push(mk('call')); break }            // pot multiway → chain ends
@@ -234,7 +247,9 @@ export function vsRfiReport(
     for (const s of vsRfiSpots(hand)) {
       if (s.defenderPos !== opts.defender || s.openerPos !== opts.opener) continue
       if (opts.excludeHero && s.isHero) continue
-      if (s.stackBB < opts.minBB) continue
+      // both players must be deep enough — the 100bb solver baseline only holds
+      // when the effective stack (min of opener & defender) is 75bb+.
+      if (s.stackBB < opts.minBB || s.openerStackBB < opts.minBB) continue
       entries[s.action].push({ handId: s.handId, cards: s.cards, stackBB: s.stackBB, isHero: s.isHero, hand })
     }
   }
@@ -262,6 +277,7 @@ function assemble(
   const actionName = kind === 'rfi' ? RFI_ACTION_NAME : VSRFI_ACTION_NAME
   let totalLoss = 0, spots = 0
   const dir = new Map<string, { count: number; bbLost: number }>()
+  const axes = { tight: 0, loose: 0, passive: 0, aggressive: 0 }
 
   const buckets: ReportBucket[] = specs.map(spec => {
     const entries = r.entries[spec.key].map(e => {
@@ -276,6 +292,16 @@ function assemble(
         const label = `${actionName(spec.solverIdx)} → ${actionName(bestIdx)}`
         const d = dir.get(label) ?? { count: 0, bbLost: 0 }
         d.count++; d.bbLost += loss; dir.set(label, d)
+        const chose = spec.solverIdx, best = bestIdx
+        const RAISE = kind === 'rfi' ? 1 : 2
+        // VPIP axis (fold vs continue) — both report types
+        if (chose === 0 && best !== 0) axes.tight += loss
+        else if (chose !== 0 && best === 0) axes.loose += loss
+        // Aggression axis (raise vs not) — vs-RFI only
+        if (kind === 'vsrfi') {
+          if (chose !== RAISE && best === RAISE) axes.passive += loss
+          else if (chose === RAISE && best !== RAISE) axes.aggressive += loss
+        }
       }
       return { ...e, evLossBb: loss, bestAction: actionName(bestIdx) }
     })
@@ -285,9 +311,26 @@ function assemble(
   const ev: EvSummary | undefined = solver ? {
     spots, totalBb: totalLoss, perSpotBb: spots ? totalLoss / spots : 0,
     directions: [...dir.entries()].map(([label, v]) => ({ label, ...v })).sort((a, b) => b.bbLost - a.bbLost),
+    axes,
+    aggressionAxis: kind === 'vsrfi',
   } : undefined
 
   return { title, subtitle, total: r.total, buckets, ev }
+}
+
+// Derive the archetype label from the two axes (by EV lost on each side).
+export function leakProfile(axes: EvSummary['axes']): { label: string; nickname: string } {
+  const EPS = 0.01
+  const tightLoose = axes.loose - axes.tight       // + = loose, − = tight
+  const passiveAggr = axes.aggressive - axes.passive // + = aggressive, − = passive
+  const t = Math.abs(tightLoose) < EPS ? '' : tightLoose > 0 ? 'Loose' : 'Tight'
+  const a = Math.abs(passiveAggr) < EPS ? '' : passiveAggr > 0 ? 'Aggressive' : 'Passive'
+  const nickname =
+    t === 'Loose' && a === 'Passive' ? 'station' :
+    t === 'Loose' && a === 'Aggressive' ? 'maniac' :
+    t === 'Tight' && a === 'Passive' ? 'nit' :
+    t === 'Tight' && a === 'Aggressive' ? 'TAG' : ''
+  return { label: [t, a].filter(Boolean).join('-') || '≈ GTO', nickname }
 }
 
 export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: SolverTable): ReportResult {
