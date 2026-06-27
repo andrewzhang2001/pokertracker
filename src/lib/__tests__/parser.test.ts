@@ -454,20 +454,20 @@ describe('RFI reports (population, by position)', () => {
   test('rfiReport aggregates BU raises and excludes the hero', () => {
     // #4899119287 = villain BU open (counts); #4899120324 = hero BU open (excluded)
     const sample = [get('4899119287'), get('4899120324')]
-    const pop = rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: true })
+    const pop = rfiReport(sample, { position: 'BU', minBB: 75, subject: 'population' })
     expect(pop.counts.raise).toBe(1)
     expect(pop.total).toBe(1)
     expect(pop.pct.raise).toBe(100)
 
     // including hero, both BU opens count
-    const all = rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: false })
+    const all = rfiReport(sample, { position: 'BU', minBB: 75, subject: 'all' })
     expect(all.counts.raise).toBe(2)
   })
 
   test('75bb+ filter drops short stacks', () => {
     const sample = [get('4899119287')] // Dealer ~136bb
-    expect(rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: true }).total).toBe(1)
-    expect(rfiReport(sample, { position: 'BU', minBB: 200, excludeHero: true }).total).toBe(0)
+    expect(rfiReport(sample, { position: 'BU', minBB: 75, subject: 'population' }).total).toBe(1)
+    expect(rfiReport(sample, { position: 'BU', minBB: 200, subject: 'population' }).total).toBe(0)
   })
 
   // ---- vs-RFI ----
@@ -481,7 +481,7 @@ describe('RFI reports (population, by position)', () => {
   })
 
   test('vsRfiReport BB vs BU counts the call', () => {
-    const r = vsRfiReport([get('4899119287')], { defender: 'BB', opener: 'BU', minBB: 75, excludeHero: true })
+    const r = vsRfiReport([get('4899119287')], { defender: 'BB', opener: 'BU', minBB: 75, subject: 'population' })
     expect(r.counts.call).toBe(1)
     expect(r.total).toBe(1)
   })
@@ -522,9 +522,9 @@ describe('RFI reports (population, by position)', () => {
     const bb = spots.find(s => s.defenderPos === 'BB')!
     expect(bb.openerStackBB).toBe(50)
     // defender is 100bb but opener is only 50bb → excluded at 75bb+
-    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 75, excludeHero: true }).total).toBe(0)
+    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 75, subject: 'population' }).total).toBe(0)
     // lower the threshold and it counts
-    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 40, excludeHero: true }).total).toBe(1)
+    expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 40, subject: 'population' }).total).toBe(1)
   })
 })
 

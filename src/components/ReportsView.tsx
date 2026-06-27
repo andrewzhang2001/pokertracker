@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
-  buildReport, leakProfile, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
-  type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable,
+  buildReport, leakProfile, MISTAKE_EPS, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
+  type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable, type Subject,
 } from '../lib/reports'
 import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
@@ -81,10 +81,12 @@ function LeakProfile({ ev }: { ev: EvSummary }) {
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ hands, onOpen, onBack }: {
+export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', title = 'Reports' }: {
   hands: ParsedHand[]
   onOpen: (sel: ReportSel) => void
   onBack: () => void
+  subject?: Subject
+  title?: string
 }) {
   // Load all solver tables once (cached) so tiles can show profile + EV/100.
   const [tables, setTables] = useState<Map<string, SolverTable>>(new Map())
@@ -104,9 +106,9 @@ export function ReportsMenu({ hands, onOpen, onBack }: {
   // Build every report (with solver EVs once tables load).
   const previews = useMemo(() => {
     const m = new Map<string, ReportResult>()
-    for (const sel of ALL_SELS) m.set(selKey(sel), buildReport(hands, sel, tables.get(solverUrl(sel))))
+    for (const sel of ALL_SELS) m.set(selKey(sel), buildReport(hands, sel, tables.get(solverUrl(sel)), subject))
     return m
-  }, [hands, tables])
+  }, [hands, tables, subject])
 
   const Tile = ({ sel, label }: { sel: ReportSel; label: string }) => {
     const r = previews.get(selKey(sel))!
@@ -152,8 +154,8 @@ export function ReportsMenu({ hands, onOpen, onBack }: {
         >
           ← Home
         </button>
-        <h1 className="text-2xl font-bold text-white">Reports</h1>
-        <span className="text-gray-600 text-xs">population · excludes your hands · 75bb+</span>
+        <h1 className="text-2xl font-bold text-white">{title}</h1>
+        <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>
         <span className="ml-auto text-xs text-gray-600">
           ratio = <span className="text-red-400">raise</span>/<span className="text-green-400">call</span>/<span className="text-blue-400">fold</span>
         </span>
@@ -303,7 +305,7 @@ function BucketColumn({ bucket, onOpenHands }: {
                 : <span className="text-gray-600 text-xs">??</span>}
             </div>
             <span className="text-xs ml-auto shrink-0">
-              {e.evLossBb !== undefined && e.evLossBb > 0.05 && (
+              {e.evLossBb !== undefined && e.evLossBb > MISTAKE_EPS && (
                 <span className="text-red-400 mr-2" title="EV lost vs GTO · GTO-best action">
                   −{e.evLossBb.toFixed(2)}{e.bestAction && ` (${e.bestAction})`}
                 </span>

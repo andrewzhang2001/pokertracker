@@ -10,24 +10,26 @@ import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
 
-type View = 'landing' | 'import' | 'database' | 'reports'
+type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster'
 type VpipFilter = 'all' | 'yes' | 'no'
 
 // --- Routing: the URL path is the source of truth for which view shows. ---
-// /  /import  /database  /reports  /reports/rfi/<pos>  /reports/vsrfi/<def>/<opener>
+// /  /import  /database  /reports[/rfi|/vsrfi/...]  /leakbuster[/...]
+// Reports = population (excludes you); Leakbuster = your hands only.
 function parseView(p: string): View {
   if (p === '/database') return 'database'
+  if (p.startsWith('/leakbuster')) return 'leakbuster'
   if (p.startsWith('/reports')) return 'reports'
   if (p === '/import') return 'import'
   return 'landing'
 }
 function parseReportSel(p: string): ReportSel | null {
-  let m = p.match(/^\/reports\/rfi\/([a-z0-9]+)/i)
+  let m = p.match(/^\/(?:reports|leakbuster)\/rfi\/([a-z0-9]+)/i)
   if (m) {
     const pos = m[1].toUpperCase()
     return (RFI_POSITIONS as readonly string[]).includes(pos) ? { type: 'rfi', pos } : null
   }
-  m = p.match(/^\/reports\/vsrfi\/([a-z]+)\/([a-z0-9]+)/i)
+  m = p.match(/^\/(?:reports|leakbuster)\/vsrfi\/([a-z]+)\/([a-z0-9]+)/i)
   if (m) {
     const defender = m[1].toUpperCase(), opener = m[2].toUpperCase()
     if ((VS_RFI_DEFENDERS as readonly string[]).includes(defender) && openersFor(defender).includes(opener))
@@ -35,10 +37,10 @@ function parseReportSel(p: string): ReportSel | null {
   }
   return null
 }
-function reportUrl(sel: ReportSel): string {
+function reportUrl(sel: ReportSel, base: string): string {
   return sel.type === 'rfi'
-    ? `/reports/rfi/${sel.pos.toLowerCase()}`
-    : `/reports/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
+    ? `${base}/rfi/${sel.pos.toLowerCase()}`
+    : `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
 }
 
 export default function App() {
@@ -125,17 +127,17 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
-  // Fetch data when entering database/reports (covers direct loads & refresh).
+  // Fetch data when entering database/reports/leakbuster (covers direct loads & refresh).
   useEffect(() => {
     if (view === 'database') loadDatabase()
-    else if (view === 'reports') loadReports()
+    else if (view === 'reports' || view === 'leakbuster') loadReports()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
   // Lazy-load the GTO solver table for the open report.
   useEffect(() => {
     const sel = parseReportSel(path)
-    if (view !== 'reports' || !sel) return
+    if ((view !== 'reports' && view !== 'leakbuster') || !sel) return
     const url = solverUrl(sel)
     let cancelled = false
     loadSolver(sel).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
@@ -235,6 +237,14 @@ export default function App() {
             <span className="text-lg font-semibold text-white">Reports</span>
             <span className="text-xs text-gray-500">Population tendencies — RFI by position, and more</span>
           </button>
+          <button
+            onClick={() => navigate('/leakbuster')}
+            className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
+          >
+            <span className="text-3xl">🛠️</span>
+            <span className="text-lg font-semibold text-white">Leakbuster</span>
+            <span className="text-xs text-gray-500">Your own EV leaks vs GTO — same reports, your hands</span>
+          </button>
         </div>
       </div>
     )
@@ -295,8 +305,11 @@ export default function App() {
     )
   }
 
-  // ---- Reports ----
-  if (view === 'reports') {
+  // ---- Reports (population) & Leakbuster (your hands) — same UI, different subject ----
+  if (view === 'reports' || view === 'leakbuster') {
+    const subject = view === 'leakbuster' ? 'hero' : 'population'
+    const base = view === 'leakbuster' ? '/leakbuster' : '/reports'
+    const title = view === 'leakbuster' ? 'Leakbuster' : 'Reports'
     if (drill) {
       return (
         <HandReplayer
@@ -310,21 +323,21 @@ export default function App() {
             return { ...d, notes }
           })}
           onBack={() => setDrill(null)}
-          backLabel="← Report"
+          backLabel={`← ${title}`}
         />
       )
     }
     if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
     if (reportSel === null) {
-      return <ReportsMenu hands={reportHands} onOpen={sel => navigate(reportUrl(sel))} onBack={() => navigate('/')} />
+      return <ReportsMenu hands={reportHands} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
     const solverTable = solver && solver.url === solverUrl(reportSel) ? solver.table : undefined
     return (
       <ReportsView
-        result={buildReport(reportHands, reportSel, solverTable)}
+        result={buildReport(reportHands, reportSel, solverTable, subject)}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
-        onBack={() => navigate('/reports')}
+        onBack={() => navigate(base)}
       />
     )
   }

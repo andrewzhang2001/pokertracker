@@ -22,6 +22,11 @@ const orderIndex = (pos: string) => ACT_ORDER.indexOf(pos)
 export const MIN_BB = 75            // depth filter: the acting player's starting stack
 export const RFI_OPEN_MIN_BB = 3.0  // a raise must be >= this to count as an RFI
 
+// Whose decisions a report covers.
+export type Subject = 'population' | 'hero' | 'all'
+const includeSpot = (subject: Subject, isHero: boolean) =>
+  subject === 'all' ? true : subject === 'hero' ? isHero : !isHero
+
 // Which openers a given defender can face an RFI from (anyone earlier to act).
 export function openersFor(defender: string): string[] {
   return RFI_POSITIONS.filter(o => orderIndex(o) < orderIndex(defender))
@@ -32,8 +37,10 @@ export function openersFor(defender: string): string[] {
 //   vs-RFI:[foldEv, callEv, raiseEv]
 export type SolverTable = Record<string, number[]>
 
-// EV loss below this (bb) is GTO-indifferent noise, not a "mistake".
-const MISTAKE_EPS = 0.05
+// EV loss at/below this (bb) is GTO-indifferent / rounding noise, not a mistake.
+// (Solver EVs are rounded to 0.001, and true mixed-strategy actions tie in EV,
+// so this only filters noise — genuine small preflop errors still count.)
+export const MISTAKE_EPS = 0.01
 
 export interface EvSummary {
   spots: number
@@ -144,13 +151,13 @@ export interface RfiReport {
 
 export function rfiReport(
   hands: ParsedHand[],
-  opts: { position: string; minBB: number; excludeHero: boolean },
+  opts: { position: string; minBB: number; subject: Subject },
 ): RfiReport {
   const entries: Record<RfiAction, ReportEntry[]> = { raise: [], limp: [], fold: [] }
   for (const hand of hands) {
     for (const s of rfiSpots(hand)) {
       if (s.displayPos !== opts.position) continue
-      if (opts.excludeHero && s.isHero) continue
+      if (!includeSpot(opts.subject, s.isHero)) continue
       // both the opener and the BB (the key effective stack) must be 75bb+
       if (s.stackBB < opts.minBB || s.bbStackBB < opts.minBB) continue
       entries[s.action].push({ handId: s.handId, cards: s.cards, stackBB: s.stackBB, isHero: s.isHero, hand })
@@ -240,13 +247,13 @@ export interface VsRfiReport {
 
 export function vsRfiReport(
   hands: ParsedHand[],
-  opts: { defender: string; opener: string; minBB: number; excludeHero: boolean },
+  opts: { defender: string; opener: string; minBB: number; subject: Subject },
 ): VsRfiReport {
   const entries: Record<VsRfiAction, ReportEntry[]> = { raise: [], call: [], fold: [] }
   for (const hand of hands) {
     for (const s of vsRfiSpots(hand)) {
       if (s.defenderPos !== opts.defender || s.openerPos !== opts.opener) continue
-      if (opts.excludeHero && s.isHero) continue
+      if (!includeSpot(opts.subject, s.isHero)) continue
       // both players must be deep enough — the 100bb solver baseline only holds
       // when the effective stack (min of opener & defender) is 75bb+.
       if (s.stackBB < opts.minBB || s.openerStackBB < opts.minBB) continue
@@ -287,8 +294,11 @@ function assemble(
       let bestIdx = 0
       for (let i = 1; i < evs.length; i++) if (evs[i] > evs[bestIdx]) bestIdx = i
       const loss = evs[bestIdx] - evs[spec.solverIdx]
-      totalLoss += loss; spots++
+      spots++
+      // Count toward the total only what we'd also itemize, so the headline EV
+      // loss always equals the sum of the mistake directions (no phantom loss).
       if (loss > MISTAKE_EPS && bestIdx !== spec.solverIdx) {
+        totalLoss += loss
         const label = `${actionName(spec.solverIdx)} → ${actionName(bestIdx)}`
         const d = dir.get(label) ?? { count: 0, bbLost: 0 }
         d.count++; d.bbLost += loss; dir.set(label, d)
@@ -333,12 +343,18 @@ export function leakProfile(axes: EvSummary['axes']): { label: string; nickname:
   return { label: [t, a].filter(Boolean).join('-') || '≈ GTO', nickname }
 }
 
-export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: SolverTable): ReportResult {
+function subtitle(kind: 'rfi' | 'vsrfi', subject: Subject): string {
+  const who = subject === 'hero' ? 'your hands' : 'population · excludes you'
+  const base = `${who} · ${MIN_BB}bb+`
+  return kind === 'rfi' ? `${base} · unopened pots` : `${base} · vs a single ≥${RFI_OPEN_MIN_BB}bb open`
+}
+
+export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: SolverTable, subject: Subject = 'population'): ReportResult {
   if (sel.type === 'rfi') {
-    const r = rfiReport(hands, { position: sel.pos, minBB: MIN_BB, excludeHero: true })
+    const r = rfiReport(hands, { position: sel.pos, minBB: MIN_BB, subject })
     return assemble('rfi',
       `${POSITION_NAMES[sel.pos]} RFI`,
-      `population · excludes you · ${MIN_BB}bb+ · unopened pots`,
+      subtitle('rfi', subject),
       r,
       [
         { key: 'raise', label: 'Raise (RFI)', style: STYLE.aggressive, solverIdx: 1 },
@@ -347,10 +363,10 @@ export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: Solver
       ],
       solver)
   }
-  const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, excludeHero: true })
+  const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, subject })
   return assemble('vsrfi',
     `${POSITION_NAMES[sel.defender]} vs ${POSITION_NAMES[sel.opener]} RFI`,
-    `population · excludes you · ${MIN_BB}bb+ · vs a single ≥${RFI_OPEN_MIN_BB}bb open`,
+    subtitle('vsrfi', subject),
     r,
     [
       { key: 'raise', label: '3-Bet', style: STYLE.aggressive, solverIdx: 2 },
