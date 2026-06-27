@@ -1,13 +1,43 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
   buildReport, leakProfile, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
-  type ReportSel, type ReportResult, type ReportBucket, type EvSummary,
+  type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable,
 } from '../lib/reports'
+import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
 
 function fmtPct(n: number) {
   return (Number.isInteger(n) ? n : n.toFixed(1)) + '%'
+}
+
+// Every report shown in the menu.
+const ALL_SELS: ReportSel[] = [
+  ...RFI_POSITIONS.map(pos => ({ type: 'rfi', pos }) as ReportSel),
+  ...VS_RFI_DEFENDERS.flatMap(d => openersFor(d).map(o => ({ type: 'vsrfi', defender: d, opener: o }) as ReportSel)),
+]
+const selKey = (sel: ReportSel) => sel.type === 'rfi' ? `rfi:${sel.pos}` : `vsrfi:${sel.defender}:${sel.opener}`
+
+function Swatch({ rgb, label }: { rgb: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1">
+      <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: `rgb(${rgb})` }} />
+      {label}
+    </span>
+  )
+}
+
+// Tile background tinted by the population's archetype, shaded by EV/100.
+function profileTint(ev: EvSummary): string {
+  const { tight, loose, passive, aggressive } = ev.axes
+  const isLoose = loose > tight
+  const isAggr = aggressive > passive
+  const rgb = !isLoose && !isAggr ? '59,130,246'  // tight-passive   → blue
+    : isLoose && !isAggr ? '234,179,8'            // loose-passive   → yellow
+    : !isLoose && isAggr ? '239,68,68'            // tight-aggressive → red
+    : '168,85,247'                                // loose-aggressive → purple
+  const a = Math.min(0.32, 0.05 + (ev.perSpotBb * 100) / 12) // shade by severity
+  return `linear-gradient(rgba(${rgb},${a}), rgba(${rgb},${a})), #111827`
 }
 
 // A diverging meter: left/right segments grow from the center, sized by bb lost.
@@ -56,22 +86,36 @@ export function ReportsMenu({ hands, onOpen, onBack }: {
   onOpen: (sel: ReportSel) => void
   onBack: () => void
 }) {
-  // Build every report once for the preview stats.
+  // Load all solver tables once (cached) so tiles can show profile + EV/100.
+  const [tables, setTables] = useState<Map<string, SolverTable>>(new Map())
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(ALL_SELS.map(async sel => {
+      try { return [solverUrl(sel), await loadSolver(sel)] as const } catch { return null }
+    })).then(rows => {
+      if (cancelled) return
+      const m = new Map<string, SolverTable>()
+      for (const r of rows) if (r) m.set(r[0], r[1])
+      setTables(m)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  // Build every report (with solver EVs once tables load).
   const previews = useMemo(() => {
     const m = new Map<string, ReportResult>()
-    for (const pos of RFI_POSITIONS) m.set(`rfi:${pos}`, buildReport(hands, { type: 'rfi', pos }))
-    for (const d of VS_RFI_DEFENDERS) for (const o of openersFor(d))
-      m.set(`vsrfi:${d}:${o}`, buildReport(hands, { type: 'vsrfi', defender: d, opener: o }))
+    for (const sel of ALL_SELS) m.set(selKey(sel), buildReport(hands, sel, tables.get(solverUrl(sel))))
     return m
-  }, [hands])
+  }, [hands, tables])
 
   const Tile = ({ sel, label }: { sel: ReportSel; label: string }) => {
-    const key = sel.type === 'rfi' ? `rfi:${sel.pos}` : `vsrfi:${sel.defender}:${sel.opener}`
-    const r = previews.get(key)!
+    const r = previews.get(selKey(sel))!
+    const tinted = !!r.ev && r.total > 0
     return (
       <button
         onClick={() => onOpen(sel)}
-        className="shrink-0 w-28 rounded-lg border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors px-3 py-2 text-left"
+        style={tinted ? { background: profileTint(r.ev!) } : undefined}
+        className={`shrink-0 w-28 rounded-lg border border-gray-700 hover:border-yellow-500 transition-colors px-3 py-2 text-left ${tinted ? '' : 'bg-gray-900 hover:bg-gray-800'}`}
       >
         <div className="text-white text-sm font-medium">{label}</div>
         <div className="text-gray-500 text-xs mt-0.5">{r.total} spots</div>
@@ -84,6 +128,9 @@ export function ReportsMenu({ hands, onOpen, onBack }: {
               </span>
             ))}
           </div>
+        )}
+        {r.ev && r.total > 0 && (
+          <div className="text-red-300 text-xs mt-0.5">−{(r.ev.perSpotBb * 100).toFixed(1)} bb/100</div>
         )}
       </button>
     )
@@ -110,6 +157,16 @@ export function ReportsMenu({ hands, onOpen, onBack }: {
         <span className="ml-auto text-xs text-gray-600">
           ratio = <span className="text-red-400">raise</span>/<span className="text-green-400">call</span>/<span className="text-blue-400">fold</span>
         </span>
+      </div>
+
+      {/* Tile color legend */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+        <span className="text-gray-600">tile = avg profile:</span>
+        <Swatch rgb="59,130,246" label="tight-passive" />
+        <Swatch rgb="234,179,8" label="loose-passive" />
+        <Swatch rgb="239,68,68" label="tight-aggressive" />
+        <Swatch rgb="168,85,247" label="loose-aggressive" />
+        <span className="text-gray-600">· intensity = EV/100</span>
       </div>
 
       <div className="flex flex-col gap-3">
