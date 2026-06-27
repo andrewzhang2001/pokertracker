@@ -463,6 +463,12 @@ describe('analyzeHand – flop c-bet & multiway spots (PLO data)', () => {
     expect(a.flopCbet?.took).toBe(false)       // …and checked back
   })
 
+  test('heroVpip: true when hero raises, false when hero only posts blind & folds', () => {
+    expect(byId('4899120324').heroVpip).toBe(true)   // hero (Dealer) raises preflop
+    expect(byId('4899119185').heroVpip).toBe(false)  // hero (BB) posts blind, folds
+    expect(byId('4899119287').heroVpip).toBe(false)  // hero (SB) posts blind, folds
+  })
+
   test('walk / unraised pots have no PFR and no flop c-bet', () => {
     const a = byId('4899120263') // folds around, BB wins, no flop
     expect(a.pfrSeat).toBe(null)

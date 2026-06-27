@@ -38,7 +38,12 @@ export interface HandAnalysis {
   heroIsPfr: boolean
   heroFlopCbetOpportunity: boolean
   heroFlopCbet: boolean
+  heroVpip: boolean             // hero voluntarily put money in (call/raise/bet/allin;
+                                // NOT forced blinds/antes). Matches the sidebar red/green.
 }
+
+// Voluntary money actions — posting blinds/antes is forced and excluded.
+const VOLUNTARY_TYPES: HandAction['type'][] = ['call', 'raise', 'bet', 'allin']
 
 const AGGRO_TYPES: HandAction['type'][] = ['bet', 'raise', 'allin']
 
@@ -104,6 +109,8 @@ export function analyzeHand(hand: ParsedHand): HandAnalysis {
   const heroIsPfr = heroSeat !== null && pfrSeat === heroSeat
   const heroFlopCbetOpportunity = heroIsPfr && !!flopCbet?.opportunity
   const heroFlopCbet = heroIsPfr && !!flopCbet?.took
+  const heroVpip = heroSeat !== null &&
+    hand.actions.some(a => a.seatNumber === heroSeat && VOLUNTARY_TYPES.includes(a.type))
 
   return {
     handId: hand.handId,
@@ -120,5 +127,6 @@ export function analyzeHand(hand: ParsedHand): HandAnalysis {
     heroIsPfr,
     heroFlopCbetOpportunity,
     heroFlopCbet,
+    heroVpip,
   }
 }

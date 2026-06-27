@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import { computeHandState } from '../lib/computeHandState'
+import { analyzeHand } from '../lib/analyzeHand'
 import { displayPosition } from '../lib/positionUtils'
 import PlayingCard from './PlayingCard'
 
@@ -20,12 +21,8 @@ function computeSummary(hand: ParsedHand, index: number): HandSummaryItem {
   const netBB = hero && heroFinal
     ? (heroFinal.stack - hero.startingStack) / hand.bigBlind
     : 0
-  const participated = hero
-    ? hand.actions.some(a =>
-        a.seatNumber === hero.seatNumber &&
-        ['call', 'raise', 'bet', 'allin'].includes(a.type)
-      )
-    : false
+  // VPIP — single source of truth in analyzeHand; drives the red/green coloring.
+  const participated = analyzeHand(hand).heroVpip
   return { index, posLabel, holeCards: heroFinal?.holeCards ?? null, netBB, participated }
 }
 
