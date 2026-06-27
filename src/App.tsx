@@ -4,7 +4,8 @@ import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
-import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, type ReportSel } from './lib/reports'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, type ReportSel, type SolverTable } from './lib/reports'
+import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
@@ -72,6 +73,8 @@ export default function App() {
   const [reportError, setReportError] = useState<string | null>(null)
   // drill-down: viewing a subset of hands (from a report bucket) in the replayer
   const [drill, setDrill] = useState<{ hands: ParsedHand[]; notes: string[]; index: number } | null>(null)
+  // GTO solver table for the current report (lazy-loaded), keyed by its url
+  const [solver, setSolver] = useState<{ url: string; table: SolverTable } | null>(null)
 
   // Filters run client-side over the loaded hands (derived live via analyzeHand),
   // so no stored column / DB backfill is needed. Keep notes aligned to filtered hands.
@@ -128,6 +131,16 @@ export default function App() {
     else if (view === 'reports') loadReports()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
+
+  // Lazy-load the GTO solver table for the open report.
+  useEffect(() => {
+    const sel = parseReportSel(path)
+    if (view !== 'reports' || !sel) return
+    const url = solverUrl(sel)
+    let cancelled = false
+    loadSolver(sel).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [view, path])
 
   // Decode shared link on first load — supports #id= (new) and #h= (legacy)
   useEffect(() => {
@@ -306,9 +319,10 @@ export default function App() {
     if (reportSel === null) {
       return <ReportsMenu hands={reportHands} onOpen={sel => navigate(reportUrl(sel))} onBack={() => navigate('/')} />
     }
+    const solverTable = solver && solver.url === solverUrl(reportSel) ? solver.table : undefined
     return (
       <ReportsView
-        result={buildReport(reportHands, reportSel)}
+        result={buildReport(reportHands, reportSel, solverTable)}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate('/reports')}
       />

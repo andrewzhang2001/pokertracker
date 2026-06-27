@@ -1,5 +1,6 @@
 import type { ParsedHand, ParsedCard } from './types'
 import { displayPosition } from './positionUtils'
+import { ploCombo } from './ploCombo'
 
 // ---------------------------------------------------------------------------
 // Population preflop reports. Aggregated across every seat (not just hero),
@@ -26,6 +27,21 @@ export function openersFor(defender: string): string[] {
   return RFI_POSITIONS.filter(o => orderIndex(o) < orderIndex(defender))
 }
 
+// Solver lookup: combo -> EVs (bb) per action.
+//   RFI:   [foldEv, raiseEv]
+//   vs-RFI:[foldEv, callEv, raiseEv]
+export type SolverTable = Record<string, number[]>
+
+// EV loss below this (bb) is GTO-indifferent noise, not a "mistake".
+const MISTAKE_EPS = 0.05
+
+export interface EvSummary {
+  spots: number
+  totalBb: number       // total EV lost across spots (bb)
+  perSpotBb: number     // average EV lost per spot (bb)
+  directions: { label: string; count: number; bbLost: number }[] // sorted by bbLost desc
+}
+
 // ---- Shared shapes for the generic report view ----
 export interface ReportEntry {
   handId: string
@@ -33,6 +49,8 @@ export interface ReportEntry {
   stackBB: number
   isHero: boolean
   hand: ParsedHand
+  evLossBb?: number     // EV given up vs the GTO-best action (bb); set when solver loaded
+  bestAction?: string   // the GTO-best action for this hand (e.g. 'fold', 'call', '3-bet')
 }
 export interface ReportBucket {
   label: string
@@ -47,6 +65,7 @@ export interface ReportResult {
   subtitle: string
   total: number
   buckets: ReportBucket[]
+  ev?: EvSummary        // set when a solver table is supplied
 }
 export type ReportSel =
   | { type: 'rfi'; pos: string }
@@ -226,33 +245,74 @@ export function vsRfiReport(
 // ===========================================================================
 // Generic builder for the report view + menu previews.
 // ===========================================================================
-function bucket(label: string, style: { color: string; bar: string }, r: { counts: any; pct: any; entries: any }, key: string): ReportBucket {
-  return { label, color: style.color, bar: style.bar, pct: r.pct[key], count: r.counts[key], entries: r.entries[key] }
+// Spec for one bucket: which raw action, its label/style, and the solver array
+// index whose EV the population's choice realizes (RFI limp uses the raise EV).
+interface BucketSpec { key: string; label: string; style: { color: string; bar: string }; solverIdx: number }
+
+const RFI_ACTION_NAME = (i: number) => (i === 0 ? 'fold' : 'raise')
+const VSRFI_ACTION_NAME = (i: number) => (i === 0 ? 'fold' : i === 1 ? 'call' : '3-bet')
+
+function assemble(
+  kind: 'rfi' | 'vsrfi',
+  title: string, subtitle: string,
+  r: { total: number; counts: Record<string, number>; pct: Record<string, number>; entries: Record<string, ReportEntry[]> },
+  specs: BucketSpec[],
+  solver?: SolverTable,
+): ReportResult {
+  const actionName = kind === 'rfi' ? RFI_ACTION_NAME : VSRFI_ACTION_NAME
+  let totalLoss = 0, spots = 0
+  const dir = new Map<string, { count: number; bbLost: number }>()
+
+  const buckets: ReportBucket[] = specs.map(spec => {
+    const entries = r.entries[spec.key].map(e => {
+      if (!solver || !e.cards) return e
+      const evs = solver[ploCombo(e.cards)]
+      if (!evs) return e
+      let bestIdx = 0
+      for (let i = 1; i < evs.length; i++) if (evs[i] > evs[bestIdx]) bestIdx = i
+      const loss = evs[bestIdx] - evs[spec.solverIdx]
+      totalLoss += loss; spots++
+      if (loss > MISTAKE_EPS && bestIdx !== spec.solverIdx) {
+        const label = `${actionName(spec.solverIdx)} → ${actionName(bestIdx)}`
+        const d = dir.get(label) ?? { count: 0, bbLost: 0 }
+        d.count++; d.bbLost += loss; dir.set(label, d)
+      }
+      return { ...e, evLossBb: loss, bestAction: actionName(bestIdx) }
+    })
+    return { label: spec.label, color: spec.style.color, bar: spec.style.bar, pct: r.pct[spec.key], count: r.counts[spec.key], entries }
+  })
+
+  const ev: EvSummary | undefined = solver ? {
+    spots, totalBb: totalLoss, perSpotBb: spots ? totalLoss / spots : 0,
+    directions: [...dir.entries()].map(([label, v]) => ({ label, ...v })).sort((a, b) => b.bbLost - a.bbLost),
+  } : undefined
+
+  return { title, subtitle, total: r.total, buckets, ev }
 }
 
-export function buildReport(hands: ParsedHand[], sel: ReportSel): ReportResult {
+export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: SolverTable): ReportResult {
   if (sel.type === 'rfi') {
     const r = rfiReport(hands, { position: sel.pos, minBB: MIN_BB, excludeHero: true })
-    return {
-      title: `${POSITION_NAMES[sel.pos]} RFI`,
-      subtitle: `population · excludes you · ${MIN_BB}bb+ · unopened pots`,
-      total: r.total,
-      buckets: [
-        bucket('Raise (RFI)', STYLE.aggressive, r, 'raise'),
-        bucket('Limp', STYLE.passive, r, 'limp'),
-        bucket('Fold', STYLE.fold, r, 'fold'),
+    return assemble('rfi',
+      `${POSITION_NAMES[sel.pos]} RFI`,
+      `population · excludes you · ${MIN_BB}bb+ · unopened pots`,
+      r,
+      [
+        { key: 'raise', label: 'Raise (RFI)', style: STYLE.aggressive, solverIdx: 1 },
+        { key: 'limp', label: 'Limp', style: STYLE.passive, solverIdx: 1 }, // limp ≈ raise EV
+        { key: 'fold', label: 'Fold', style: STYLE.fold, solverIdx: 0 },
       ],
-    }
+      solver)
   }
   const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, excludeHero: true })
-  return {
-    title: `${POSITION_NAMES[sel.defender]} vs ${POSITION_NAMES[sel.opener]} RFI`,
-    subtitle: `population · excludes you · ${MIN_BB}bb+ · vs a single ≥${RFI_OPEN_MIN_BB}bb open`,
-    total: r.total,
-    buckets: [
-      bucket('3-Bet', STYLE.aggressive, r, 'raise'),
-      bucket('Call', STYLE.passive, r, 'call'),
-      bucket('Fold', STYLE.fold, r, 'fold'),
+  return assemble('vsrfi',
+    `${POSITION_NAMES[sel.defender]} vs ${POSITION_NAMES[sel.opener]} RFI`,
+    `population · excludes you · ${MIN_BB}bb+ · vs a single ≥${RFI_OPEN_MIN_BB}bb open`,
+    r,
+    [
+      { key: 'raise', label: '3-Bet', style: STYLE.aggressive, solverIdx: 2 },
+      { key: 'call', label: 'Call', style: STYLE.passive, solverIdx: 1 },
+      { key: 'fold', label: 'Fold', style: STYLE.fold, solverIdx: 0 },
     ],
-  }
+    solver)
 }

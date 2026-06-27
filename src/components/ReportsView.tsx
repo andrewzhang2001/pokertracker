@@ -141,6 +141,38 @@ export default function ReportsView({ result, onOpenHands, onBack }: Props) {
           )}
         </div>
 
+        {/* GTO EV analysis */}
+        {result.total > 0 && (
+          <div className="max-w-2xl mx-auto mb-6">
+            {!result.ev ? (
+              <p className="text-center text-gray-600 text-xs">Loading GTO EVs…</p>
+            ) : result.ev.spots > 0 && (
+              <>
+                <div className="text-center text-sm">
+                  <span className="text-gray-400">EV loss vs GTO: </span>
+                  <span className="text-red-400 font-semibold">−{(result.ev.perSpotBb * 100).toFixed(2)} bb/100</span>
+                  <span className="text-gray-600"> · total −{result.ev.totalBb.toFixed(1)} bb over {result.ev.spots} spots</span>
+                </div>
+                {result.ev.directions.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 text-center">
+                      Mistake directions (chose → GTO best · by EV lost)
+                    </div>
+                    <div className="flex flex-col gap-1 max-w-md mx-auto">
+                      {result.ev.directions.map(d => (
+                        <div key={d.label} className="flex justify-between text-xs px-2 py-1 rounded bg-black/30">
+                          <span className="text-gray-300">{d.label}</span>
+                          <span className="text-gray-500">{d.count}× · <span className="text-red-400">−{d.bbLost.toFixed(2)} bb</span></span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-5xl mx-auto">
           {result.buckets.map(b => (
             <BucketColumn key={b.label} bucket={b} onOpenHands={onOpenHands} />
@@ -174,7 +206,14 @@ function BucketColumn({ bucket, onOpenHands }: {
                 ? e.cards.map((c, j) => <PlayingCard key={j} card={c} tiny />)
                 : <span className="text-gray-600 text-xs">??</span>}
             </div>
-            <span className="text-gray-400 text-xs ml-auto shrink-0">{Math.round(e.stackBB)}bb</span>
+            <span className="text-xs ml-auto shrink-0">
+              {e.evLossBb !== undefined && e.evLossBb > 0.05 && (
+                <span className="text-red-400 mr-2" title="EV lost vs GTO · GTO-best action">
+                  −{e.evLossBb.toFixed(2)}{e.bestAction && ` (${e.bestAction})`}
+                </span>
+              )}
+              <span className="text-gray-400">{Math.round(e.stackBB)}bb</span>
+            </span>
           </button>
         ))}
       </div>

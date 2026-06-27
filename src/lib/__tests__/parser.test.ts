@@ -6,7 +6,9 @@ import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
-import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport } from '../reports'
+import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport } from '../reports'
+import { ploCombo } from '../ploCombo'
+import type { ParsedCard } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -496,6 +498,45 @@ describe('RFI reports (population, by position)', () => {
   test('opens below the RFI size threshold are excluded', () => {
     // #4899119287 open is 3.4bb; requiring >=5bb yields no vs-RFI spots
     expect(vsRfiSpots(get('4899119287'), 5.0).length).toBe(0)
+  })
+})
+
+describe('ploCombo – dealt hand → solver combo key', () => {
+  const C = (s: string): ParsedCard[] =>
+    s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+
+  test('user-confirmed mappings', () => {
+    expect(ploCombo(C('As 2s Ah Ad'))).toBe('[A2]AA')   // A2 suited, other aces offsuit
+    expect(ploCombo(C('Js Ts 9h 8h'))).toBe('[JT][98]') // double-suited JT / 98
+    expect(ploCombo(C('As Ah Ad Ac'))).toBe('AAAA')      // rainbow quads
+    expect(ploCombo(C('Ah 4h 3h 2h'))).toBe('[A432]')    // monotone
+  })
+
+  test('every parsed PLO hole hand maps to a real solver combo (BU table)', () => {
+    const table = JSON.parse(readFileSync(resolve(root, 'public/solver/rfi/bu.json'), 'utf-8'))
+    const hands = parseHandHistories(hhPlo)
+    let checked = 0
+    for (const h of hands) {
+      for (const a of h.actions) {
+        if (a.type === 'deal_hole' && a.cards?.length === 4) {
+          expect(table[ploCombo(a.cards)]).toBeDefined()
+          checked++
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(50)
+  })
+
+  test('buildReport computes GTO EV loss end-to-end (BU RFI)', () => {
+    const table = JSON.parse(readFileSync(resolve(root, 'public/solver/rfi/bu.json'), 'utf-8'))
+    const hands = parseHandHistories(hhPlo)
+    const r = buildReport(hands, { type: 'rfi', pos: 'BU' }, table)
+    expect(r.ev).toBeDefined()
+    expect(r.ev!.spots).toBeGreaterThan(0)
+    expect(r.ev!.perSpotBb).toBeGreaterThanOrEqual(0)
+    expect(r.ev!.perSpotBb).toBeLessThan(2) // sanity: population isn't bleeding >2bb/spot
+    // EV loss is attached to individual hands
+    expect(r.buckets.flatMap(b => b.entries).some(e => e.evLossBb !== undefined)).toBe(true)
   })
 })
 
