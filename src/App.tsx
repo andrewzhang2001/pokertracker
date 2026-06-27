@@ -4,14 +4,39 @@ import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
+import { RFI_POSITIONS } from './lib/reports'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
+import ReportsView, { ReportsMenu } from './components/ReportsView'
 
-type View = 'landing' | 'import' | 'database'
+type View = 'landing' | 'import' | 'database' | 'reports'
 type VpipFilter = 'all' | 'yes' | 'no'
 
+// --- Routing: the URL path is the source of truth for which view shows. ---
+// /  /import  /database  /reports  /reports/<position>
+function parseView(p: string): View {
+  if (p === '/database') return 'database'
+  if (p.startsWith('/reports')) return 'reports'
+  if (p === '/import') return 'import'
+  return 'landing'
+}
+function parseReportPosition(p: string): string | null {
+  const m = p.match(/^\/reports\/([a-z0-9]+)/i)
+  if (!m) return null
+  const pos = m[1].toUpperCase()
+  return (RFI_POSITIONS as readonly string[]).includes(pos) ? pos : null
+}
+
 export default function App() {
-  const [view, setView] = useState<View>('landing')
+  const [path, setPath] = useState(() => window.location.pathname)
+  const view = parseView(path)
+  const reportPosition = parseReportPosition(path)
+
+  function navigate(to: string, replace = false) {
+    if (replace) { history.replaceState(null, '', to); setPath(to); return }
+    if (window.location.pathname !== to) history.pushState(null, '', to)
+    setPath(to)
+  }
 
   // import view state
   const [importHands, setImportHands] = useState<ParsedHand[]>([])
@@ -28,6 +53,13 @@ export default function App() {
   const [dbError, setDbError] = useState<string | null>(null)
   const [vpipFilter, setVpipFilter] = useState<VpipFilter>('all')
 
+  // reports view state
+  const [reportHands, setReportHands] = useState<ParsedHand[]>([])
+  const [reportStatus, setReportStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [reportError, setReportError] = useState<string | null>(null)
+  // drill-down: viewing a subset of hands (from a report bucket) in the replayer
+  const [drill, setDrill] = useState<{ hands: ParsedHand[]; notes: string[]; index: number } | null>(null)
+
   // Filters run client-side over the loaded hands (derived live via analyzeHand),
   // so no stored column / DB backfill is needed. Keep notes aligned to filtered hands.
   const dbFiltered = useMemo(() => {
@@ -39,6 +71,50 @@ export default function App() {
         return vpipFilter === 'yes' ? v : !v
       })
   }, [dbHands, dbNotes, vpipFilter])
+
+  async function loadDatabase() {
+    setDbStatus('loading')
+    setDbError(null)
+    try {
+      const { hands, notes } = await fetchHandsFromDb()
+      setDbHands(hands)
+      setDbNotes(notes)
+      setDbStatus('idle')
+    } catch (e) {
+      setDbError(String((e as Error).message ?? e))
+      setDbStatus('error')
+    }
+  }
+
+  async function loadReports() {
+    setReportStatus('loading')
+    setReportError(null)
+    try {
+      const { hands } = await fetchHandsFromDb()
+      setReportHands(hands)
+      setReportStatus('idle')
+    } catch (e) {
+      setReportError(String((e as Error).message ?? e))
+      setReportStatus('error')
+    }
+  }
+
+  // Browser back/forward.
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  // Leaving the report drill-down whenever the route changes.
+  useEffect(() => { setDrill(null) }, [path])
+
+  // Fetch data when entering database/reports (covers direct loads & refresh).
+  useEffect(() => {
+    if (view === 'database') loadDatabase()
+    else if (view === 'reports') loadReports()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view])
 
   // Decode shared link on first load — supports #id= (new) and #h= (legacy)
   useEffect(() => {
@@ -52,9 +128,10 @@ export default function App() {
       if (parsed.length) {
         setImportHands(parsed)
         setImportNotes(Array.from({ length: parsed.length }, (_, i) => handNotes[i] ?? ''))
-        setView('import')
+        navigate('/import', true)
       }
     }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function loadText(text: string) {
@@ -67,7 +144,7 @@ export default function App() {
     setImportHands(parsed)
     setImportNotes(new Array(parsed.length).fill(''))
     setExportState('idle')
-    history.replaceState(null, '', window.location.pathname)
+    navigate('/import', true) // normalize URL (strip any share hash)
   }
 
   async function loadFiles(fileList: FileList | null) {
@@ -80,33 +157,12 @@ export default function App() {
     }
   }
 
-  function backToLanding() {
-    setView('landing')
-    history.replaceState(null, '', window.location.pathname)
-  }
-
   function resetImport() {
     setImportHands([])
     setPasteText('')
     setImportNotes([])
     setExportState('idle')
-    setView('landing')
-    history.replaceState(null, '', window.location.pathname)
-  }
-
-  async function openDatabase() {
-    setView('database')
-    setDbStatus('loading')
-    setDbError(null)
-    try {
-      const { hands, notes } = await fetchHandsFromDb()
-      setDbHands(hands)
-      setDbNotes(notes)
-      setDbStatus('idle')
-    } catch (e) {
-      setDbError(String((e as Error).message ?? e))
-      setDbStatus('error')
-    }
+    navigate('/')
   }
 
   async function handleExport() {
@@ -130,7 +186,7 @@ export default function App() {
         <h1 className="text-4xl font-bold text-white">Poker Hand Tracker</h1>
         <div className="flex flex-col sm:flex-row gap-6">
           <button
-            onClick={openDatabase}
+            onClick={() => navigate('/database')}
             className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
           >
             <span className="text-3xl">🗄️</span>
@@ -138,12 +194,20 @@ export default function App() {
             <span className="text-xs text-gray-500">Browse and filter your saved hands</span>
           </button>
           <button
-            onClick={() => { setView('import'); setError(null) }}
+            onClick={() => { setError(null); navigate('/import') }}
             className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
           >
             <span className="text-3xl">📥</span>
             <span className="text-lg font-semibold text-white">Import</span>
             <span className="text-xs text-gray-500">Paste a hand history to review, then export to your database</span>
+          </button>
+          <button
+            onClick={() => navigate('/reports')}
+            className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
+          >
+            <span className="text-3xl">📊</span>
+            <span className="text-lg font-semibold text-white">Reports</span>
+            <span className="text-xs text-gray-500">Population tendencies — RFI by position, and more</span>
           </button>
         </div>
       </div>
@@ -153,13 +217,13 @@ export default function App() {
   // ---- Database ----
   if (view === 'database') {
     if (dbStatus === 'loading') {
-      return <CenteredMessage title="Loading hands…" onBack={backToLanding} />
+      return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
     }
     if (dbStatus === 'error') {
-      return <CenteredMessage title="Couldn't load hands" detail={dbError ?? ''} onBack={backToLanding} />
+      return <CenteredMessage title="Couldn't load hands" detail={dbError ?? ''} onBack={() => navigate('/')} />
     }
     if (!dbHands.length) {
-      return <CenteredMessage title="No hands saved yet" detail="Import some hands and export them to your database." onBack={backToLanding} />
+      return <CenteredMessage title="No hands saved yet" detail="Import some hands and export them to your database." onBack={() => navigate('/')} />
     }
 
     const filterBar = (
@@ -184,7 +248,7 @@ export default function App() {
           <h1 className="text-2xl font-bold text-white">No hands match this filter</h1>
           <div>{filterBar}</div>
           <button onClick={() => setVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
-          <button onClick={backToLanding} className="text-xs text-gray-500 hover:text-white">← Home</button>
+          <button onClick={() => navigate('/')} className="text-xs text-gray-500 hover:text-white">← Home</button>
         </div>
       )
     }
@@ -198,9 +262,44 @@ export default function App() {
           const orig = dbFiltered[idx].orig
           setDbNotes(prev => { const n = [...prev]; n[orig] = value; return n })
         }}
-        onBack={backToLanding}
+        onBack={() => navigate('/')}
         backLabel="← Home"
         topBarExtra={filterBar}
+      />
+    )
+  }
+
+  // ---- Reports ----
+  if (view === 'reports') {
+    if (drill) {
+      return (
+        <HandReplayer
+          key={`drill-${drill.index}-${drill.hands.length}`}
+          hands={drill.hands}
+          handNotes={drill.notes}
+          initialHandIndex={drill.index}
+          onUpdateNote={(idx, value) => setDrill(d => {
+            if (!d) return d
+            const notes = [...d.notes]; notes[idx] = value
+            return { ...d, notes }
+          })}
+          onBack={() => setDrill(null)}
+          backLabel="← Report"
+        />
+      )
+    }
+    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
+    if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
+    if (reportPosition === null) {
+      return <ReportsMenu hands={reportHands} onOpen={pos => navigate('/reports/' + pos.toLowerCase())} onBack={() => navigate('/')} />
+    }
+    return (
+      <ReportsView
+        hands={reportHands}
+        position={reportPosition}
+        onChangePosition={pos => navigate('/reports/' + pos.toLowerCase())}
+        onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
+        onBack={() => navigate('/reports')}
       />
     )
   }
@@ -236,7 +335,7 @@ export default function App() {
         {error && <p className="text-red-400 text-sm">{error}</p>}
         <div className="flex gap-3">
           <button
-            onClick={backToLanding}
+            onClick={() => navigate('/')}
             className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
           >
             ← Home

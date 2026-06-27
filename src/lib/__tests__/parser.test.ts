@@ -6,6 +6,7 @@ import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
+import { rfiSpots, rfiReport } from '../reports'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '../../../')
@@ -423,6 +424,48 @@ describe('dedupeAndSort – multi-file import merging', () => {
     // every hand keeps its own blinds/gameType after merging
     const merged = dedupeAndSort(parseHandHistories(hhPlo))
     expect(merged.every(h => h.bigBlind === 0.25 && h.gameType === 'OMAHA Pot Limit')).toBe(true)
+  })
+})
+
+describe('RFI reports (population, by position)', () => {
+  const hands = parseHandHistories(hhPlo)
+  const get = (id: string) => hands.find(h => h.handId === id)!
+
+  test('#4899119287: folded to villain Button who raises → BU RFI raise spot', () => {
+    // UTG & UTG+1 fold, Dealer (villain) opens; SB[ME]/BB are after the open
+    const spots = rfiSpots(get('4899119287'))
+    const bu = spots.find(s => s.displayPos === 'BU')
+    expect(bu).toBeDefined()
+    expect(bu!.action).toBe('raise')
+    expect(bu!.isHero).toBe(false)
+    expect(bu!.stackBB).toBeGreaterThanOrEqual(75)
+    // the two players before the open are folds in unopened pots
+    expect(spots.filter(s => s.action === 'fold').length).toBe(2)
+  })
+
+  test('facing a raise is NOT an RFI spot (#4899119185: Dealer folds to an open)', () => {
+    // UTG opens first, so Dealer never faced an unopened pot
+    const spots = rfiSpots(get('4899119185'))
+    expect(spots.some(s => s.displayPos === 'BU')).toBe(false)
+  })
+
+  test('rfiReport aggregates BU raises and excludes the hero', () => {
+    // #4899119287 = villain BU open (counts); #4899120324 = hero BU open (excluded)
+    const sample = [get('4899119287'), get('4899120324')]
+    const pop = rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: true })
+    expect(pop.counts.raise).toBe(1)
+    expect(pop.total).toBe(1)
+    expect(pop.pct.raise).toBe(100)
+
+    // including hero, both BU opens count
+    const all = rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: false })
+    expect(all.counts.raise).toBe(2)
+  })
+
+  test('75bb+ filter drops short stacks', () => {
+    const sample = [get('4899119287')] // Dealer ~136bb
+    expect(rfiReport(sample, { position: 'BU', minBB: 75, excludeHero: true }).total).toBe(1)
+    expect(rfiReport(sample, { position: 'BU', minBB: 200, excludeHero: true }).total).toBe(0)
   })
 })
 

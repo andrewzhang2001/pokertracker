@@ -14,13 +14,15 @@ interface Props {
   backLabel?: string
   topBarExtra?: ReactNode      // view-specific controls (export button, filters…)
   enableShare?: boolean        // show share buttons (default true)
+  initialHandIndex?: number    // which hand to open on first render
 }
 
 export default function HandReplayer({
   hands, handNotes, onUpdateNote, onBack, backLabel = '← Back', topBarExtra, enableShare = true,
+  initialHandIndex = 0,
 }: Props) {
-  const [handIndex, setHandIndex] = useState(0)
-  const [stepIndex, setStepIndex] = useState(() => hands[0]?.initialStep ?? -1)
+  const [handIndex, setHandIndex] = useState(initialHandIndex)
+  const [stepIndex, setStepIndex] = useState(() => hands[initialHandIndex]?.initialStep ?? -1)
   const [showOpponentCards, setShowOpponentCards] = useState(true)
   const [sharing, setSharing] = useState(false)
   const [copied, setCopied] = useState(false)
