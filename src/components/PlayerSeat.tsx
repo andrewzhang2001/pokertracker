@@ -6,7 +6,8 @@ interface Props {
   posLabel: string
   bigBlind: number
   showHoleCards: boolean
-  equity?: number          // postflop equity vs a random field (0..1), if known
+  made?: string | null     // top-level made-hand class (postflop), if known
+  equity?: number          // postflop showdown equity (0..1), if known
   x: number
   y: number
 }
@@ -16,7 +17,7 @@ function bbStr(amount: number, bigBlind: number): string {
   return (Number.isInteger(v) ? String(v) : v.toFixed(1)) + 'bb'
 }
 
-export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, equity, x, y }: Props) {
+export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, made, equity, x, y }: Props) {
   const borderColor = player.isMe
     ? 'border-yellow-400'
     : player.folded
@@ -46,12 +47,9 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, 
           <div className="text-sm font-semibold text-white truncate">
             {posLabel}{player.isMe ? ' ★' : ''}
           </div>
-          <div className="text-sm text-gray-300">
-            {bbStr(player.stack, bigBlind)}
-            {equity !== undefined && (
-              <span className="text-cyan-300 ml-1.5">{Math.round(equity * 100)}% eq</span>
-            )}
-          </div>
+          <div className="text-sm text-gray-300">{bbStr(player.stack, bigBlind)}</div>
+          {made && <div className="text-xs text-amber-300 truncate">{made}</div>}
+          {equity !== undefined && <div className="text-xs text-cyan-300">{Math.round(equity * 100)}% eq</div>}
         </div>
       </div>
     </div>

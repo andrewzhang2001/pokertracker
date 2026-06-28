@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
-  extractSpots, formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel,
+  extractSpots, formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel, lineSeq,
   type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
 } from '../lib/postflop'
 
@@ -64,6 +64,9 @@ function Bubble({ cell, label, onClick }: { cell: TreeCell; label: string; onCli
   )
 }
 
+// Line passivity order (most passive first): check-check < check-bet-call < bet-call.
+const LINE_ORDER: Record<string, number> = { xx: 0, xbc: 1, bc: 2 }
+
 const oopCells = (cells: TreeCell[]) => cells.filter(c => c.acting === 'oop')
 const ipCells = (cells: TreeCell[]) => cells.filter(c => c.acting === 'ip')
 
@@ -101,10 +104,11 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
     [spots, mode, filter],
   )
   const tree = useMemo(() => formationTree(spots, formationId, mode, filter), [spots, formationId, mode, filter])
-  // Common lines first; default selection = the most frequent line.
-  const lines: TreeLine[] = useMemo(() => [...tree.lines].sort((a, b) => b.freq - a.freq), [tree])
+  // Order lines most-passive → most-aggressive (by first action): check-check,
+  // then check-bet-call, then bet-call.
+  const lines: TreeLine[] = useMemo(() => [...tree.lines].sort((a, b) => LINE_ORDER[a.id] - LINE_ORDER[b.id]), [tree])
   const selectedLine = lines.find(l => l.id === lineId) ?? lines[0]
-  const turnLines = useMemo(() => [...(selectedLine?.turnLines ?? [])].sort((a, b) => b.freq - a.freq), [selectedLine])
+  const turnLines = useMemo(() => [...(selectedLine?.turnLines ?? [])].sort((a, b) => LINE_ORDER[a.id] - LINE_ORDER[b.id]), [selectedLine])
   const selectedTurnLine = turnLines.find(t => t.id === turnLineId) ?? turnLines[0]
 
   useEffect(() => {
@@ -198,18 +202,19 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
                   <button
                     key={line.id}
                     onClick={() => setLineId(line.id)}
-                    className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${active
+                    className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${active
                       ? 'border-yellow-500 bg-yellow-500/15 text-yellow-200'
                       : 'border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500'}`}
                   >
                     {lineLabel(line.id, pfa)}
-                    <span className={`ml-2 text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{line.freq}</span>
+                    <span className="rounded bg-black/40 px-1 font-mono text-xs text-gray-400">{lineSeq(line.id)}</span>
+                    <span className={`text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{line.freq}</span>
                   </button>
                 )
               })}
             </div>
             {selectedLine && (
-              <NodeRow label={lineLabel(selectedLine.id, pfa)} sub={`${selectedLine.freq} to turn`} cells={selectedLine.turn} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
+              <NodeRow label="Turn" cells={selectedLine.turn} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
             )}
           </div>
 
@@ -226,24 +231,19 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
                     <button
                       key={tl.id}
                       onClick={() => setTurnLineId(tl.id)}
-                      className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${active
+                      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${active
                         ? 'border-yellow-500 bg-yellow-500/15 text-yellow-200'
                         : 'border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500'}`}
                     >
                       {turnLineLabel(selectedLine.id, tl.id, pfa)}
-                      <span className={`ml-2 text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{tl.freq}</span>
+                      <span className="rounded bg-black/40 px-1 font-mono text-xs text-gray-400">{lineSeq(selectedLine.id)} {lineSeq(tl.id)}</span>
+                      <span className={`text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{tl.freq}</span>
                     </button>
                   )
                 })}
               </div>
               {selectedTurnLine && (
-                <NodeRow
-                  label={turnLineLabel(selectedLine.id, selectedTurnLine.id, pfa)}
-                  sub={`${selectedTurnLine.freq} to river`}
-                  cells={selectedTurnLine.river}
-                  pfa={pfa}
-                  onOpen={id => onOpen(formationId, id)}
-                />
+                <NodeRow label="River" cells={selectedTurnLine.river} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
               )}
             </div>
           )}

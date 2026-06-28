@@ -238,13 +238,32 @@ export function nodeLabel(nodeId: string, pfa: FlopActor): string {
     case 'xbc-xb': return 'vs double-barrel'
     case 'xbc-b': return 'vs donk'
   }
-  // River nodes are `${flopLine}-${turnLine}-${key}` (3 segments) → generic names.
+  // River nodes are `${flopLine}-${turnLine}-${key}` (3 segments).
   const segs = nodeId.split('-')
   if (segs.length === 3) {
-    const key = segs[2]
-    return key === 'initial' ? 'lead' : key === 'x' ? 'vs check' : 'vs bet'
+    const [flopLine, turnLine, key] = segs
+    const line = `${flopLine}-${turnLine}`
+    if (line === 'xbc-bc' && key === 'initial') return 'double-barrel'  // OOP donked turn, barrels again
+    if (line === 'xbc-xbc') {                                           // IP c-bet flop + turn → river = barrel 3
+      if (key === 'initial') return 'river donk'
+      if (key === 'xb') return 'vs triple-barrel'
+      if (key === 'b') return 'vs river donk'
+    }
+    if (line === 'xx-xbc') {                                            // IP (delayed) bet turn + river = barrel 2
+      if (key === 'initial') return 'river donk'
+      if (key === 'xb') return 'vs double-barrel'
+      if (key === 'b') return 'vs river donk'
+    }
+    // OOP leading the river after the turn checked through is a probe.
+    if (key === 'initial') return turnLine === 'xx' ? 'river probe' : 'lead'
+    return key === 'x' ? 'vs check' : 'vs bet'
   }
   return nodeId
+}
+
+// Raw action notation for a closing line, e.g. xx → "X-X", xbc → "X-B-C".
+export function lineSeq(lineId: string): string {
+  return lineId === 'xx' ? 'X-X' : lineId === 'bc' ? 'B-C' : lineId === 'xbc' ? 'X-B-C' : lineId
 }
 
 // Canonical name for a flop-closing line (the turn-section selector bubbles).
@@ -431,6 +450,7 @@ function filterFormation(spots: FlopSpot[], f: Formation, filter: PostflopFilter
     (filter.straight === 'any' || s.straighty === (filter.straight === 'yes')))
 }
 const actingIsMe = (s: FlopSpot, a: FlopActor) => (a === 'oop' ? s.oopIsHero : s.ipIsHero)
+const heroInvolved = (s: FlopSpot) => s.oopIsHero || s.ipIsHero
 const cardsOf = (s: FlopSpot, a: FlopActor) => (a === 'oop' ? s.oopCards : s.ipCards)
 
 // ---- detail report: one node + its prior / responses (mirrors the old scenarios) ----
@@ -480,8 +500,10 @@ export function formationReport(
   const base = filterFormation(spots, formation, filter)
   const { heroNode, prior, responses } = deriveNodes(node)
 
-  // Your node: your hands in 'hero' mode, the field MINUS you in 'population'.
-  // Villain nodes are always the opponents' ranges (exclude your own plays).
+  // Per-DECISION subject: in 'hero' mode the acting player is you; in
+  // 'population' mode it's anyone but you (so we keep opponents' decisions even
+  // from hands you played). Villain (prior/response) nodes are always the
+  // field's decisions (any non-you actor).
   const heroSpots = mode === 'hero' ? base.filter(s => actingIsMe(s, node.acting)) : base.filter(s => !actingIsMe(s, node.acting))
   const villSeat = otherSeat(node.acting)
   const villainSpots = base.filter(s => !actingIsMe(s, villSeat))
@@ -507,26 +529,32 @@ export interface FormationTree { total: number; flop: TreeCell[]; lines: TreeLin
 
 export function formationTree(spots: FlopSpot[], formationId: string, mode: PostflopMode, filter: PostflopFilter): FormationTree {
   const formation = FORMATIONS.find(f => f.id === formationId) ?? FORMATIONS[0]
-  const base = filterFormation(spots, formation, filter)
+  const all = filterFormation(spots, formation, filter)
+  const heroM = mode === 'hero'
+  // Hands with usable data for this mode: hero = the ones you played; population
+  // = every hand, since each has an opponent whose decisions are population data
+  // (even hands you were in, just from the one side that isn't you).
+  const dataBase = heroM ? all.filter(heroInvolved) : all
+  // Per-decision pool: your decisions (hero) vs anyone-but-you's (population).
   const cell = (node: NodeDef): TreeCell => {
-    const pool = mode === 'hero' ? base.filter(s => actingIsMe(s, node.acting)) : base.filter(s => !actingIsMe(s, node.acting))
+    const pool = heroM ? all.filter(s => actingIsMe(s, node.acting)) : all.filter(s => !actingIsMe(s, node.acting))
     const r = nodeBreakdown(pool, node)
     return { id: node.id, short: node.short, acting: node.acting, total: r.total, actionCounts: r.actionCounts }
   }
   const lines = CLOSING_LINES.map(fl => ({
     id: fl.id,
     label: fl.label,
-    // flop line frequency = spots that followed exactly this flop line and reached the turn
-    freq: base.filter(s => s.actions.length === fl.path.length && pathMatches(s.actions, fl.path) && s.turnCard).length,
+    // flop line frequency = data hands that followed exactly this flop line and reached the turn
+    freq: dataBase.filter(s => s.actions.length === fl.path.length && pathMatches(s.actions, fl.path) && s.turnCard).length,
     turn: turnNodes(fl).map(cell),
     turnLines: CLOSING_LINES.map(tl => ({
       id: tl.id,
       // turn line frequency = reached the river via exactly this flop line + turn line
-      freq: base.filter(s =>
+      freq: dataBase.filter(s =>
         s.actions.length === fl.path.length && pathMatches(s.actions, fl.path) &&
         s.turnActions.length === tl.path.length && pathMatches(s.turnActions, tl.path) && s.riverCard).length,
       river: riverNodes(fl, tl).map(cell),
     })),
   }))
-  return { total: base.length, flop: FLOP_NODES.map(cell), lines }
+  return { total: dataBase.length, flop: FLOP_NODES.map(cell), lines }
 }

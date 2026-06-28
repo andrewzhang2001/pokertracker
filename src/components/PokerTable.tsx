@@ -1,6 +1,7 @@
 import { useRef, useState, useLayoutEffect, useMemo } from 'react'
-import type { ParsedHand, HandState, PlayerInfo } from '../lib/types'
+import type { ParsedHand, ParsedCard, HandState, PlayerInfo } from '../lib/types'
 import { computeEquities } from '../lib/equity'
+import { classifyBoard } from '../lib/ploEval'
 import { POSITION_RANK, displayPosition } from '../lib/positionUtils'
 import PlayerSeat from './PlayerSeat'
 import PlayingCard from './PlayingCard'
@@ -79,8 +80,15 @@ function actionColor(streetAction: string): string {
 
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
   const { seats, chips } = getLayout(hand.players)
-  // Postflop equity vs a random field, recomputed per step (board / live set change).
+  // Postflop showdown equity, recomputed per step (board / live set change).
   const equities = useMemo(() => computeEquities(hand, state), [hand, state])
+  // A player's hand class from their own cards + the public board: the made-hand
+  // name, else the draw(s) (flush draw / OESD / gutshot / wrap), else "air".
+  const madeOf = (cards: ParsedCard[] | null): string | null => {
+    if (state.communityCards.length < 3 || !cards) return null
+    const hc = classifyBoard(cards, state.communityCards)
+    return hc.made ?? hc.label
+  }
   const containerRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
 
@@ -204,6 +212,7 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
             posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
             showHoleCards={showHoleCards}
+            made={showHoleCards ? madeOf(player.holeCards) : null}
             equity={showOpponentCards ? equities[player.seatNumber] : undefined}
             x={px}
             y={py}
