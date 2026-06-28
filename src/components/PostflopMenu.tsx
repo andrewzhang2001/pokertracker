@@ -67,22 +67,38 @@ function Bubble({ cell, label, onClick }: { cell: TreeCell; label: string; onCli
 // Line passivity order (most passive first): check-check < check-bet-call < bet-call.
 const LINE_ORDER: Record<string, number> = { xx: 0, xbc: 1, bc: 2 }
 
-const oopCells = (cells: TreeCell[]) => cells.filter(c => c.acting === 'oop')
-const ipCells = (cells: TreeCell[]) => cells.filter(c => c.acting === 'ip')
+// One player's bubbles, grouped into columns by depth (col 0 = after one action,
+// col 1 = after a raise); bubbles within a column stack vertically.
+function SideColumns({ cells, pfa, onOpen, end }: {
+  cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void; end?: boolean
+}) {
+  const cols = [...new Set(cells.map(c => c.col))].sort((a, b) => a - b)
+  return (
+    <div className={`flex gap-2 ${end ? 'justify-end' : ''}`}>
+      {cols.map(col => (
+        <div key={col} className="flex flex-col gap-2">
+          {cells.filter(c => c.col === col).map(c => (
+            <Bubble key={c.id} cell={c} label={nodeLabel(c.id, pfa)} onClick={() => onOpen(c.id)} />
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
 
-// One street row: a left-hand label, then OOP bubbles on the left / IP on the right.
+// One street row: a left-hand label, then OOP columns on the left / IP on the right.
 function NodeRow({ label, sub, cells, pfa, onOpen }: {
   label: string; sub?: string; cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="w-20 shrink-0 text-right">
+    <div className="flex items-start gap-3">
+      <div className="w-20 shrink-0 text-right pt-1">
         <div className="text-sm font-semibold text-gray-200">{label}</div>
         {sub && <div className="text-[10px] text-gray-600">{sub}</div>}
       </div>
       <div className="flex-1 grid grid-cols-2 gap-3">
-        <div className="flex gap-2">{oopCells(cells).map(c => <Bubble key={c.id} cell={c} label={nodeLabel(c.id, pfa)} onClick={() => onOpen(c.id)} />)}</div>
-        <div className="flex gap-2 justify-end">{ipCells(cells).map(c => <Bubble key={c.id} cell={c} label={nodeLabel(c.id, pfa)} onClick={() => onOpen(c.id)} />)}</div>
+        <SideColumns cells={cells.filter(c => c.acting === 'oop')} pfa={pfa} onOpen={onOpen} />
+        <SideColumns cells={cells.filter(c => c.acting === 'ip')} pfa={pfa} onOpen={onOpen} end />
       </div>
     </div>
   )

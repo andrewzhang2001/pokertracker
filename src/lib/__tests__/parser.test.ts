@@ -809,6 +809,28 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(r.listSpots[0].cards).toEqual(C('Th 9h 8s 7d'))
   })
 
+  test('flop raise nodes: IP vs check-raise (X-B-R) and the X-B-R-C turn line', () => {
+    // BU opens, BB[hero] calls; flop: BB check, BU bet, BB raise, BU call (X-B-R-C),
+    // then a turn is dealt.
+    const h = hand('Ks 7h 2d', [
+      A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('raise', 3, 'flop', 12), A('call', 1, 'flop', 9),
+    ])
+    h.actions.push(
+      A('deal_turn', undefined as unknown as number, 'turn', undefined, C('Qs')),
+      A('check', 3, 'turn'),
+    )
+    const s = extractFlopSpot(h)!
+    expect(s.actions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:raise', 'ip:call'])
+
+    // IP (BU, not hero) facing the check-raise → population mode
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'flop-xbr', 'population', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)
+    expect(r.heroNode.actionCounts.call).toBe(1)
+    // the X-B-R-C closing line reaches a turn node (OOP first to act = hero here)
+    const turn = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbrc-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(turn.heroNode.total).toBe(1)
+  })
+
   test('river capture + formationReport on a river node (X-B-C / X-B-C)', () => {
     // BU opens, BB[hero] calls; flop X-B-C, turn X-B-C, river: BB check, BU bet, BB call.
     const h = {

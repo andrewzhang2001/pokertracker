@@ -189,6 +189,7 @@ export interface NodeDef {
   turnPath?: PathStep[]   // turn prefix (turn nodes); EXACT turn closing line (river nodes)
   riverPath?: PathStep[]  // river prefix (river nodes only)
   acting: FlopActor       // whose decision this node captures
+  col?: number            // landing layout column within the acting side (0 = after one action, 1 = after a raise)
 }
 
 export interface Formation {
@@ -222,6 +223,8 @@ export function nodeLabel(nodeId: string, pfa: FlopActor): string {
     case 'flop-x': return 'vs check'
     case 'flop-xb': return ipPfa ? 'vs c-bet' : 'vs stab'
     case 'flop-b': return oopPfa ? 'vs c-bet' : 'vs donk'
+    case 'flop-xbr': return 'vs check-raise'   // IP cbet, OOP check-raised
+    case 'flop-br': return 'vs raise'          // OOP bet, IP raised
     // X-X (check-check) turn
     case 'xx-initial': return 'probe'
     case 'xx-x': return 'vs check'
@@ -238,10 +241,18 @@ export function nodeLabel(nodeId: string, pfa: FlopActor): string {
     case 'xbc-xb': return 'vs double-barrel'
     case 'xbc-b': return 'vs donk'
   }
-  // River nodes are `${flopLine}-${turnLine}-${key}` (3 segments).
   const segs = nodeId.split('-')
+  // Turn nodes: `${flopLine}-${key}` (the named lines are handled above).
+  if (segs.length === 2) {
+    const key = segs[1]
+    return key === 'initial' ? 'lead' : key === 'x' ? 'vs check'
+      : key === 'xbr' ? 'vs check-raise' : key === 'br' ? 'vs raise' : 'vs bet'
+  }
+  // River nodes are `${flopLine}-${turnLine}-${key}` (3 segments).
   if (segs.length === 3) {
     const [flopLine, turnLine, key] = segs
+    if (key === 'xbr') return 'vs check-raise'
+    if (key === 'br') return 'vs raise'
     const line = `${flopLine}-${turnLine}`
     if (line === 'xbc-bc' && key === 'initial') return 'double-barrel'  // OOP donked turn, barrels again
     if (line === 'xbc-xbc') {                                           // IP c-bet flop + turn → river = barrel 3
@@ -263,7 +274,8 @@ export function nodeLabel(nodeId: string, pfa: FlopActor): string {
 
 // Raw action notation for a closing line, e.g. xx → "X-X", xbc → "X-B-C".
 export function lineSeq(lineId: string): string {
-  return lineId === 'xx' ? 'X-X' : lineId === 'bc' ? 'B-C' : lineId === 'xbc' ? 'X-B-C' : lineId
+  return lineId === 'xx' ? 'X-X' : lineId === 'bc' ? 'B-C' : lineId === 'xbc' ? 'X-B-C'
+    : lineId === 'xbrc' ? 'X-B-R-C' : lineId === 'brc' ? 'B-R-C' : lineId
 }
 
 // Canonical name for a flop-closing line (the turn-section selector bubbles).
@@ -271,6 +283,8 @@ export function lineLabel(lineId: string, pfa: FlopActor): string {
   if (lineId === 'xx') return 'check-check'
   if (lineId === 'bc') return pfa === 'oop' ? 'c-bet line' : 'donk line'
   if (lineId === 'xbc') return pfa === 'ip' ? 'c-bet line' : 'stab line'
+  if (lineId === 'xbrc') return 'check-raise line'
+  if (lineId === 'brc') return 'raise line'
   return lineId
 }
 
@@ -294,35 +308,50 @@ export function riverLineLabel(flopLineId: string, turnLineId: string, pfa: Flop
 const CHK: PathStep = { actor: 'oop', type: 'check' }
 const BET: PathStep = { actor: 'oop', type: 'bet' }
 
-// Flop decision nodes (the left column on the landing).
+const IP_BET: PathStep = { actor: 'ip', type: 'bet' }
+const IP_RAISE: PathStep = { actor: 'ip', type: 'raise' }
+const OOP_RAISE: PathStep = { actor: 'oop', type: 'raise' }
+const IP_CALL: PathStep = { actor: 'ip', type: 'call' }
+const OOP_CALL: PathStep = { actor: 'oop', type: 'call' }
+
+// Flop decision nodes. col 0 = after one action, col 1 = after a raise.
 const FLOP_NODES: NodeDef[] = [
-  { id: 'flop-initial', label: 'Flop — OOP first to act', short: 'first', street: 'flop', path: [], acting: 'oop' },
-  { id: 'flop-x', label: 'Flop — IP facing a check', short: 'X', street: 'flop', path: [CHK], acting: 'ip' },
-  { id: 'flop-xb', label: 'Flop — OOP facing a c-bet', short: 'X-B', street: 'flop', path: [CHK, { actor: 'ip', type: 'bet' }], acting: 'oop' },
-  { id: 'flop-b', label: 'Flop — IP facing a bet', short: 'B', street: 'flop', path: [BET], acting: 'ip' },
+  { id: 'flop-initial', label: 'Flop — OOP first to act', short: 'first', street: 'flop', path: [], acting: 'oop', col: 0 },
+  { id: 'flop-x', label: 'Flop — IP facing a check', short: 'X', street: 'flop', path: [CHK], acting: 'ip', col: 0 },
+  { id: 'flop-xb', label: 'Flop — OOP facing a c-bet', short: 'X-B', street: 'flop', path: [CHK, IP_BET], acting: 'oop', col: 0 },
+  { id: 'flop-b', label: 'Flop — IP facing a bet', short: 'B', street: 'flop', path: [BET], acting: 'ip', col: 0 },
+  { id: 'flop-xbr', label: 'Flop — IP facing a check-raise', short: 'X-B-R', street: 'flop', path: [CHK, IP_BET, OOP_RAISE], acting: 'ip', col: 1 },
+  { id: 'flop-br', label: 'Flop — OOP facing a raise', short: 'B-R', street: 'flop', path: [BET, IP_RAISE], acting: 'oop', col: 1 },
 ]
 
-// Flop-closing lines that reach the turn (raise lines pruned for now).
 export interface ClosingLine { id: string; label: string; path: PathStep[] }
-const CLOSING_LINES: ClosingLine[] = [
+// Flop-closing lines (incl. raise lines) — each reaches the turn.
+const FLOP_LINES: ClosingLine[] = [
   { id: 'xx', label: 'X-X', path: [CHK, { actor: 'ip', type: 'check' }] },
-  { id: 'bc', label: 'B-C', path: [BET, { actor: 'ip', type: 'call' }] },
-  { id: 'xbc', label: 'X-B-C', path: [CHK, { actor: 'ip', type: 'bet' }, { actor: 'oop', type: 'call' }] },
+  { id: 'bc', label: 'B-C', path: [BET, IP_CALL] },
+  { id: 'xbc', label: 'X-B-C', path: [CHK, IP_BET, OOP_CALL] },
+  { id: 'xbrc', label: 'X-B-R-C', path: [CHK, IP_BET, OOP_RAISE, IP_CALL] },
+  { id: 'brc', label: 'B-R-C', path: [BET, IP_RAISE, OOP_CALL] },
 ]
+// Turn-closing lines (no turn raises) — each reaches the river.
+const TURN_LINES: ClosingLine[] = FLOP_LINES.slice(0, 3)
 
-// The four decision prefixes shared by every street (no raise-on-bet lines).
-const DECISIONS: { key: string; short: string; steps: PathStep[]; acting: FlopActor }[] = [
-  { key: 'initial', short: 'first', steps: [], acting: 'oop' },
-  { key: 'x', short: 'X', steps: [CHK], acting: 'ip' },
-  { key: 'xb', short: 'X-B', steps: [CHK, { actor: 'ip', type: 'bet' }], acting: 'oop' },
-  { key: 'b', short: 'B', steps: [BET], acting: 'ip' },
+// Decision prefixes shared by every street. col 0 = after one action,
+// col 1 = facing a raise (vs check-raise for IP, vs raise for OOP).
+const DECISIONS: { key: string; short: string; steps: PathStep[]; acting: FlopActor; col: number }[] = [
+  { key: 'initial', short: 'first', steps: [], acting: 'oop', col: 0 },
+  { key: 'x', short: 'X', steps: [CHK], acting: 'ip', col: 0 },
+  { key: 'xb', short: 'X-B', steps: [CHK, IP_BET], acting: 'oop', col: 0 },
+  { key: 'b', short: 'B', steps: [BET], acting: 'ip', col: 0 },
+  { key: 'xbr', short: 'X-B-R', steps: [CHK, IP_BET, OOP_RAISE], acting: 'ip', col: 1 },
+  { key: 'br', short: 'B-R', steps: [BET, IP_RAISE], acting: 'oop', col: 1 },
 ]
 
 // Turn decision nodes mirror the flop set, one block per flop-closing line.
 function turnNodes(cl: ClosingLine): NodeDef[] {
   return DECISIONS.map(d => ({
     id: `${cl.id}-${d.key}`, label: `Turn (${cl.label}) — ${d.key}`, short: d.short,
-    street: 'turn' as Street, path: cl.path, turnPath: d.steps, acting: d.acting,
+    street: 'turn' as Street, path: cl.path, turnPath: d.steps, acting: d.acting, col: d.col,
   }))
 }
 
@@ -330,14 +359,14 @@ function turnNodes(cl: ClosingLine): NodeDef[] {
 function riverNodes(fl: ClosingLine, tl: ClosingLine): NodeDef[] {
   return DECISIONS.map(d => ({
     id: `${fl.id}-${tl.id}-${d.key}`, label: `River (${fl.label} / ${tl.label}) — ${d.key}`, short: d.short,
-    street: 'river' as Street, path: fl.path, turnPath: tl.path, riverPath: d.steps, acting: d.acting,
+    street: 'river' as Street, path: fl.path, turnPath: tl.path, riverPath: d.steps, acting: d.acting, col: d.col,
   }))
 }
 
 export const NODES: NodeDef[] = [
   ...FLOP_NODES,
-  ...CLOSING_LINES.flatMap(turnNodes),
-  ...CLOSING_LINES.flatMap(fl => CLOSING_LINES.flatMap(tl => riverNodes(fl, tl))),
+  ...FLOP_LINES.flatMap(turnNodes),
+  ...FLOP_LINES.flatMap(fl => TURN_LINES.flatMap(tl => riverNodes(fl, tl))),
 ]
 const NODE_BY_ID = new Map(NODES.map(n => [n.id, n]))
 export const getNode = (id: string) => NODE_BY_ID.get(id)
@@ -522,7 +551,7 @@ export function formationReport(
 }
 
 // ---- landing tree: every node's count + the line frequencies for drill-down ----
-export interface TreeCell { id: string; short: string; acting: FlopActor; total: number; actionCounts: Record<string, number> }
+export interface TreeCell { id: string; short: string; acting: FlopActor; col: number; total: number; actionCounts: Record<string, number> }
 export interface TreeTurnLine { id: string; freq: number; river: TreeCell[] }  // a flop+turn line → river nodes
 export interface TreeLine { id: string; label: string; freq: number; turn: TreeCell[]; turnLines: TreeTurnLine[] }
 export interface FormationTree { total: number; flop: TreeCell[]; lines: TreeLine[] }
@@ -539,15 +568,15 @@ export function formationTree(spots: FlopSpot[], formationId: string, mode: Post
   const cell = (node: NodeDef): TreeCell => {
     const pool = heroM ? all.filter(s => actingIsMe(s, node.acting)) : all.filter(s => !actingIsMe(s, node.acting))
     const r = nodeBreakdown(pool, node)
-    return { id: node.id, short: node.short, acting: node.acting, total: r.total, actionCounts: r.actionCounts }
+    return { id: node.id, short: node.short, acting: node.acting, col: node.col ?? 0, total: r.total, actionCounts: r.actionCounts }
   }
-  const lines = CLOSING_LINES.map(fl => ({
+  const lines = FLOP_LINES.map(fl => ({
     id: fl.id,
     label: fl.label,
     // flop line frequency = data hands that followed exactly this flop line and reached the turn
     freq: dataBase.filter(s => s.actions.length === fl.path.length && pathMatches(s.actions, fl.path) && s.turnCard).length,
     turn: turnNodes(fl).map(cell),
-    turnLines: CLOSING_LINES.map(tl => ({
+    turnLines: TURN_LINES.map(tl => ({
       id: tl.id,
       // turn line frequency = reached the river via exactly this flop line + turn line
       freq: dataBase.filter(s =>
