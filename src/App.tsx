@@ -9,8 +9,10 @@ import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
+import PostflopView from './components/PostflopView'
+import PostflopMenu from './components/PostflopMenu'
 
-type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster'
+type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster' | 'postflop'
 type VpipFilter = 'all' | 'yes' | 'no'
 
 // --- Routing: the URL path is the source of truth for which view shows. ---
@@ -20,6 +22,7 @@ function parseView(p: string): View {
   if (p === '/database') return 'database'
   if (p.startsWith('/leakbuster')) return 'leakbuster'
   if (p.startsWith('/reports')) return 'reports'
+  if (p.startsWith('/postflop')) return 'postflop'
   if (p === '/import') return 'import'
   return 'landing'
 }
@@ -36,6 +39,11 @@ function parseReportSel(p: string): ReportSel | null {
       return { type: 'vsrfi', defender, opener }
   }
   return null
+}
+// /postflop/:formationId/:nodeId — the chosen formation + decision node.
+function parsePostflopSel(p: string): { formationId: string; nodeId: string } | null {
+  const m = p.match(/^\/postflop\/([a-z0-9-]+)\/([a-z0-9~-]+)/i)
+  return m ? { formationId: m[1], nodeId: m[2] } : null
 }
 function reportUrl(sel: ReportSel, base: string): string {
   return sel.type === 'rfi'
@@ -127,10 +135,10 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
-  // Fetch data when entering database/reports/leakbuster (covers direct loads & refresh).
+  // Fetch data when entering database/reports/leakbuster/postflop (covers direct loads & refresh).
   useEffect(() => {
     if (view === 'database') loadDatabase()
-    else if (view === 'reports' || view === 'leakbuster') loadReports()
+    else if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -245,6 +253,14 @@ export default function App() {
             <span className="text-lg font-semibold text-white">Leakbuster</span>
             <span className="text-xs text-gray-500">Your own EV leaks vs GTO — same reports, your hands</span>
           </button>
+          <button
+            onClick={() => navigate('/postflop')}
+            className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
+          >
+            <span className="text-3xl">🃏</span>
+            <span className="text-lg font-semibold text-white">Postflop</span>
+            <span className="text-xs text-gray-500">Spot browser — BB vs c-bet, by texture &amp; sizing</span>
+          </button>
         </div>
       </div>
     )
@@ -338,6 +354,48 @@ export default function App() {
         result={buildReport(reportHands, reportSel, solverTable, subject)}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
+      />
+    )
+  }
+
+  // ---- Postflop spot browser ----
+  if (view === 'postflop') {
+    if (drill) {
+      return (
+        <HandReplayer
+          key={`pf-drill-${drill.index}-${drill.hands.length}`}
+          hands={drill.hands}
+          handNotes={drill.notes}
+          initialHandIndex={drill.index}
+          onUpdateNote={(idx, value) => setDrill(d => {
+            if (!d) return d
+            const notes = [...d.notes]; notes[idx] = value
+            return { ...d, notes }
+          })}
+          onBack={() => setDrill(null)}
+          backLabel="← Postflop"
+        />
+      )
+    }
+    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
+    if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
+    const pfSel = parsePostflopSel(path)
+    if (!pfSel) {
+      return (
+        <PostflopMenu
+          hands={reportHands}
+          onOpen={(formationId, nodeId) => navigate(`/postflop/${formationId}/${nodeId}${window.location.search}`)}
+          onBack={() => navigate('/')}
+        />
+      )
+    }
+    return (
+      <PostflopView
+        hands={reportHands}
+        formationId={pfSel.formationId}
+        nodeId={pfSel.nodeId}
+        onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
+        onBack={() => navigate(`/postflop${window.location.search}`)}
       />
     )
   }

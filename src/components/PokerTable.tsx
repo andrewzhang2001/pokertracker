@@ -1,5 +1,6 @@
-import { useRef, useState, useLayoutEffect } from 'react'
+import { useRef, useState, useLayoutEffect, useMemo } from 'react'
 import type { ParsedHand, HandState, PlayerInfo } from '../lib/types'
+import { computeEquities } from '../lib/equity'
 import { POSITION_RANK, displayPosition } from '../lib/positionUtils'
 import PlayerSeat from './PlayerSeat'
 import PlayingCard from './PlayingCard'
@@ -78,6 +79,8 @@ function actionColor(streetAction: string): string {
 
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
   const { seats, chips } = getLayout(hand.players)
+  // Postflop equity vs a random field, recomputed per step (board / live set change).
+  const equities = useMemo(() => computeEquities(hand, state), [hand, state])
   const containerRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
 
@@ -201,6 +204,7 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
             posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
             showHoleCards={showHoleCards}
+            equity={showHoleCards ? equities[player.seatNumber] : undefined}
             x={px}
             y={py}
           />

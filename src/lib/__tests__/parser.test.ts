@@ -8,6 +8,9 @@ import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
 import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport, leakProfile } from '../reports'
 import { ploCombo } from '../ploCombo'
+import { flopTexture, straightPossibleFlop, extractFlopSpot, extractSpots, formationReport } from '../postflop'
+import { classifyFlop, classifyBoard } from '../ploEval'
+import { handEquityVsRandom } from '../equity'
 import type { ParsedCard, HandAction, ParsedHand } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -602,6 +605,326 @@ describe('ploCombo – dealt hand → solver combo key', () => {
     expect(r.ev!.perSpotBb).toBeLessThan(2) // sanity: population isn't bleeding >2bb/spot
     // EV loss is attached to individual hands
     expect(r.buckets.flatMap(b => b.entries).some(e => e.evLossBb !== undefined)).toBe(true)
+  })
+})
+
+describe('ploEval – flop hand classification', () => {
+  const C = (s: string): ParsedCard[] =>
+    s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+  const made = (hole: string, flop: string) => classifyFlop(C(hole), C(flop)).made
+  const cls = (hole: string, flop: string) => classifyFlop(C(hole), C(flop))
+
+  test('made hands', () => {
+    expect(made('Ah Ac 7d 8s', 'Ks 9h 2d')).toBe('overpair')
+    expect(made('Kh 8c 9d Js', 'Ks 5h 2d')).toBe('top pair')
+    expect(made('7h 8c 9d Js', 'Ks 9s 2d')).toBe('middle pair')
+    expect(made('7h 8c 2c Js', 'Ks 9s 2d')).toBe('bottom pair')
+    expect(made('9h 9c 4d 2s', 'Ks 9d 5h')).toBe('set')
+    expect(made('Kh 4c 7d 8s', 'Ks Kd 5h')).toBe('trips')
+    expect(made('Ks 5c 8d 9s', 'Kh 5d 2c')).toBe('two pair')
+    expect(made('Jh Tc 4d 2s', 'Qs 9h 8d')).toBe('straight')
+    expect(made('Ah 2h 5c 7d', 'Kh 9h 3h')).toBe('flush')
+    expect(made('8h 8c 4d 2s', 'Kc 9s 5h')).toBe('pocket pair') // underpair
+  })
+
+  test('draws + combos', () => {
+    expect(cls('Ah 2h 5c 7d', 'Kh 9h 3c')).toMatchObject({ made: null, draws: ['flush draw'] })
+    expect(cls('Jh Tc 4d 6s', '9h 8d 2c').draws).toContain('OESD')
+    expect(cls('Qh Jc 4s 6d', 'Kh 9d 2c').draws).toContain('gutshot')
+    expect(cls('Jc Tc 7s 6d', '9h 8d 2c').draws).toContain('wrap')
+    expect(cls('9s 9h 8s 2c', '9d 7s 3s')).toMatchObject({ made: 'set', draws: ['flush draw'] })
+    expect(cls('Ah Kd Qc Js', '9h 5d 2c').label).toBe('air')
+    // made hand + draw renders as a combined label
+    expect(cls('9s 9h 8s 2c', '9d 7s 3s').label).toBe('set, flush draw')
+  })
+
+  test('postflop equity vs a random field (Monte Carlo, loose bounds)', () => {
+    const C = (s: string): ParsedCard[] =>
+      s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+    // Hold'em: a set on a dry board crushes one random opponent.
+    expect(handEquityVsRandom(C('Ah Ad'), C('As 7c 2d'), 1, false)).toBeGreaterThan(0.9)
+    // The stone-cold nuts (Broadway, no flush possible) = ~100%.
+    expect(handEquityVsRandom(C('Ah Kd'), C('Qs Jc Ts 2h 3d'), 1, false)).toBeGreaterThan(0.98)
+    // 7-2 offsuit on an unrelated board is a big dog to one random hand.
+    expect(handEquityVsRandom(C('7h 2d'), C('Ks Qc Jd'), 1, false)).toBeLessThan(0.35)
+    // More opponents → less equity for the same holding.
+    const heads = handEquityVsRandom(C('Ah Ad'), C('Kc 8d 3s'), 1, false)
+    const four = handEquityVsRandom(C('Ah Ad'), C('Kc 8d 3s'), 4, false)
+    expect(heads).toBeGreaterThan(four)
+  })
+
+  test('classifyBoard on a 4-card turn', () => {
+    const cb = (hole: string, board: string) => classifyBoard(C(hole), C(board))
+    // flush completes on the turn
+    expect(cb('Ah 2h 5c 7d', 'Kh 9h 3c Qh').made).toBe('flush')
+    // straight completes on the turn (JT + Q98 board)
+    expect(cb('Jh Tc 4d 2s', 'Qs 9h 8d 3c').made).toBe('straight')
+    // turn pairs the top card → top pair (best 2 hole + 3 board)
+    expect(cb('Kh 8c 4d 3s', '7s 5d 2c Kd').made).toBe('top pair')
+    // flush DRAW still pending after the turn (2 hole + 2 board suited)
+    expect(cb('Ah 2h 5c 7d', 'Kh 9h 3c Qs').draws).toContain('flush draw')
+  })
+})
+
+describe('postflop – BB vs flop c-bet spot', () => {
+  const C = (s: string): ParsedCard[] =>
+    s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+  const A = (type: string, seatNumber: number, street: string, amount?: number, cards?: ParsedCard[]): HandAction =>
+    ({ type: type as HandAction['type'], seatNumber, amount, cards, street: street as HandAction['street'], desc: '' })
+
+  // 3-handed: BU(villain) opens to 3bb, SB folds, BB[hero] calls; HU flop.
+  function hand(flop: string, villainFlop: HandAction[]): ParsedHand {
+    return {
+      handId: 'pf', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: true, startingStack: 100 },
+      ],
+      actions: [
+        A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')),
+        A('deal_hole', 3, 'preflop', undefined, C('Th 9h 8s 7d')),
+        A('raise', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('call', 3, 'preflop', 2),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C(flop)),
+        ...villainFlop,
+      ].filter(a => a.seatNumber !== undefined || a.type === 'deal_flop'),
+    } as ParsedHand
+  }
+
+  test('flopTexture & connectivity', () => {
+    expect(flopTexture(C('As Ks Qs'))).toEqual({ suits: 'mono', paired: false })
+    expect(flopTexture(C('Ah Kh 2d'))).toEqual({ suits: 'twotone', paired: false })
+    expect(flopTexture(C('As Ad Kc'))).toEqual({ suits: 'rainbow', paired: true })
+    expect(straightPossibleFlop(C('6s 5h 4d'))).toBe(true)   // 654
+    expect(straightPossibleFlop(C('Ts 9h 8d'))).toBe(true)   // T98
+    expect(straightPossibleFlop(C('Qs 6h 3d'))).toBe(false)  // Q63 — span 9, no straight
+    expect(straightPossibleFlop(C('Ks 7h 2d'))).toBe(false)
+    expect(straightPossibleFlop(C('Ah 2c 3d'))).toBe(true)   // wheel A23
+    expect(straightPossibleFlop(C('Ts 9h 5d'))).toBe(false)  // span 5 — only draws, no made straight
+  })
+
+  test('extractFlopSpot: SRP HU, OOP = first to act, normalized actions', () => {
+    const h = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3)])
+    const s = extractFlopSpot(h)!
+    expect(s.potType).toBe('SRP')
+    expect(s.oopPos).toBe('BB')          // hero (seat3) acts first
+    expect(s.ipPos).toBe('BU')           // opener (seat1)
+    expect(s.oopIsHero).toBe(true)
+    expect(s.actions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:call'])
+    expect(s.ipClass?.made).toBe('top pair') // As Ks Qd Jc on Ks → top pair
+  })
+
+  test('bet% and check-raise% sizing (raise = extra over the call, vs pot after call)', () => {
+    // preflop pot = SB .5 + BU 3 + BB 3 = 6.5; flop: BB checks, BU bets 3, BB raises to 12
+    const h = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('raise', 3, 'flop', 12), A('fold', 1, 'flop')])
+    const s = extractFlopSpot(h)!
+    expect(s.actions[1].betPct).toBeCloseTo(3 / 6.5, 4)          // bet 3 into 6.5
+    expect(s.actions[2].betPct).toBeCloseTo((12 - 3) / (9.5 + 3), 4) // (12-3) / (6.5+3 + 3) = 9/12.5 = 0.72
+  })
+
+  test('formationReport: hero node + prior + check-raise response (SRP BB vs c-bet)', () => {
+    const faced = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3)])
+    const back = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('check', 1, 'flop')])
+    const xr = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('raise', 3, 'flop', 12), A('fold', 1, 'flop')])
+    const r = formationReport(extractSpots([faced, back, xr]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+
+    expect(r.heroNode.total).toBe(2)            // faced (call) + xr (raise) reach the node; back does not
+    expect(r.prior!.total).toBe(3)              // all three checked to the IP raiser
+    expect(r.responses[0].total).toBe(1)        // only xr reaches "vs your check-raise"
+    expect(r.listSpots.length).toBe(2)
+    // texture filter (rainbow board) excludes monotone
+    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { suits: 'mono', paired: 'any', straight: 'any' }).heroNode.total).toBe(0)
+  })
+
+  test('formationReport: 3BP OOP first-to-act with villain response nodes', () => {
+    // 3-handed: BU opens 3, SB folds, BB[hero] 3-bets to 10, BU calls; HU flop, BB bets, BU calls
+    const h3bet = {
+      handId: '3bp', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: true, startingStack: 100 },
+      ],
+      actions: [
+        A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')),
+        A('deal_hole', 3, 'preflop', undefined, C('Ah Ac 7d 8s')),
+        A('raise', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('raise', 3, 'preflop', 10), A('call', 1, 'preflop', 7),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('bet', 3, 'flop', 6), A('call', 1, 'flop', 6),
+      ].filter(a => a.seatNumber !== undefined || a.type === 'deal_flop'),
+    } as ParsedHand
+    const s = extractFlopSpot(h3bet)!
+    expect(s.potType).toBe('3BP')
+    expect(s.oopPos).toBe('BB')
+    const r = formationReport(extractSpots([h3bet]), '3bp-oop', 'flop-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)                 // hero acts first (bet)
+    expect(r.prior).toBeUndefined()
+    expect(r.responses.find(n => n.label.includes('vs your bet'))!.total).toBe(1) // villain faced the bet
+  })
+
+  test('turn capture + formationReport on a turn node (X-B-C → turn X-B)', () => {
+    // BU opens, BB[hero] calls; flop Ks7h2d: BB check, BU c-bet, BB call (X-B-C closes);
+    // turn Qs: BB check, BU bet, BB call → reaches the turn X-B node (OOP facing a bet).
+    const h = {
+      handId: 'turn', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: true, startingStack: 100 },
+      ],
+      actions: [
+        A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')),
+        A('deal_hole', 3, 'preflop', undefined, C('Th 9h 8s 7d')),
+        A('raise', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('call', 3, 'preflop', 2),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3),
+        A('deal_turn', undefined as unknown as number, 'turn', undefined, C('Qs')),
+        A('check', 3, 'turn'), A('bet', 1, 'turn', 6), A('call', 3, 'turn', 6),
+      ].filter(a => a.seatNumber !== undefined || a.type === 'deal_flop' || a.type === 'deal_turn'),
+    } as ParsedHand
+
+    const s = extractFlopSpot(h)!
+    expect(s.turnCard).toEqual(C('Qs')[0])
+    expect(s.turnActions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:call'])
+
+    // hero (BB/OOP) facing the turn bet on the X-B-C line
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)
+    expect(r.heroNode.actionCounts.call).toBe(1)
+    expect(r.prior!.total).toBe(1)              // villain's turn bet (the prior decision)
+    expect(r.listSpots[0].cards).toEqual(C('Th 9h 8s 7d'))
+  })
+
+  test('river capture + formationReport on a river node (X-B-C / X-B-C)', () => {
+    // BU opens, BB[hero] calls; flop X-B-C, turn X-B-C, river: BB check, BU bet, BB call.
+    const h = {
+      handId: 'river', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: false, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: true, startingStack: 100 },
+      ],
+      actions: [
+        A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')),
+        A('deal_hole', 3, 'preflop', undefined, C('Th 9h 8s 7d')),
+        A('raise', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('call', 3, 'preflop', 2),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3),
+        A('deal_turn', undefined as unknown as number, 'turn', undefined, C('Qs')),
+        A('check', 3, 'turn'), A('bet', 1, 'turn', 6), A('call', 3, 'turn', 6),
+        A('deal_river', undefined as unknown as number, 'river', undefined, C('2c')),
+        A('check', 3, 'river'), A('bet', 1, 'river', 12), A('call', 3, 'river', 12),
+      ].filter(a => a.seatNumber !== undefined || ['deal_flop', 'deal_turn', 'deal_river'].includes(a.type)),
+    } as ParsedHand
+
+    const s = extractFlopSpot(h)!
+    expect(s.riverCard).toEqual(C('2c')[0])
+    expect(s.riverActions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:call'])
+
+    // hero (BB/OOP) facing the river bet on the X-B-C / X-B-C line
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xbc-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)
+    expect(r.heroNode.actionCounts.call).toBe(1)
+    expect(r.prior!.total).toBe(1)              // villain's river bet
+    expect(r.listSpots[0].cards).toEqual(C('Th 9h 8s 7d'))
+  })
+
+  test('squeeze / cold-call pot is NOT a clean 3BP (rejected)', () => {
+    // BU opens, SB[hero] cold-calls, BB squeezes, BU folds, SB calls → 2 raises, HU,
+    // but a caller sits between the open and the 3-bet → not a clean 3BP.
+    const squeeze = {
+      handId: 'sq', tableId: '', site: 'ignition', date: '', playedAt: 0,
+      gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+      players: [
+        { seatNumber: 1, position: 'Dealer', isMe: false, startingStack: 100 },
+        { seatNumber: 2, position: 'Small Blind', isMe: true, startingStack: 100 },
+        { seatNumber: 3, position: 'Big Blind', isMe: false, startingStack: 100 },
+      ],
+      actions: [
+        A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 2, 'preflop', undefined, C('Kh Qd Jc Ts')),
+        A('raise', 1, 'preflop', 3), A('call', 2, 'preflop', 2.5), A('raise', 3, 'preflop', 10),
+        A('fold', 1, 'preflop'), A('call', 2, 'preflop', 7),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('check', 2, 'flop'), A('bet', 3, 'flop', 6), A('call', 2, 'flop', 6),
+      ].filter(a => a.seatNumber !== undefined || a.type === 'deal_flop'),
+    } as ParsedHand
+    expect(extractFlopSpot(squeeze)).toBeNull()
+  })
+
+  // generic builder for multi-player synthetic hands
+  const mk = (players: [number, string, boolean, number][], acts: HandAction[]): ParsedHand => ({
+    handId: 'g', tableId: '', site: 'ignition', date: '', playedAt: 0, gameType: 'OMAHA Pot Limit',
+    currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+    players: players.map(([seatNumber, position, isMe, startingStack]) => ({ seatNumber, position, isMe, startingStack })),
+    actions: acts.filter(a => a.seatNumber !== undefined || a.type === 'deal_flop'),
+  } as ParsedHand)
+
+  test('preflop sanity filters reject short stacks / tiny opens / small 3-bets', () => {
+    const srp = (openTo: number, stack: number) => mk(
+      [[1, 'Dealer', false, stack], [2, 'Small Blind', false, stack], [3, 'Big Blind', true, stack]],
+      [A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')), A('deal_hole', 3, 'preflop', undefined, C('Th 9h 8s 7d')),
+        A('raise', 1, 'preflop', openTo), A('fold', 2, 'preflop'), A('call', 3, 'preflop', openTo - 1),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('check', 3, 'flop'), A('bet', 1, 'flop', 2)])
+    expect(extractFlopSpot(srp(3, 100))).not.toBeNull()  // baseline ok
+    expect(extractFlopSpot(srp(3, 50))).toBeNull()        // < 75bb
+    expect(extractFlopSpot(srp(2, 100))).toBeNull()       // open < 3bb
+    // small 3-bet (1 → 3 → 6): (6-3)/(4.5+3) = 40% < 75%
+    const small3bet = mk(
+      [[1, 'Dealer', false, 100], [2, 'Small Blind', false, 100], [3, 'Big Blind', true, 100]],
+      [A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 1, 'preflop', undefined, C('As Ks Qd Jc')), A('deal_hole', 3, 'preflop', undefined, C('Th 9h 8s 7d')),
+        A('raise', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('raise', 3, 'preflop', 6), A('call', 1, 'preflop', 3),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('bet', 3, 'flop', 4)])
+    expect(extractFlopSpot(small3bet)).toBeNull()
+  })
+
+  test('SRP · IP vs RFI: hero is the IP caller facing the OOP c-bet', () => {
+    // HJ(seat5) opens, BU[hero](seat1) calls, blinds fold; flop HJ bets, BU calls
+    const h = mk(
+      [[1, 'Dealer', true, 100], [2, 'Small Blind', false, 100], [3, 'Big Blind', false, 100],
+        [4, 'UTG', false, 100], [5, 'UTG+1', false, 100], [6, 'UTG+2', false, 100]],
+      [A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 5, 'preflop', undefined, C('Ts 9s 8d 2c')), A('deal_hole', 1, 'preflop', undefined, C('Ah Kd Qc Jh')),
+        A('fold', 4, 'preflop'), A('raise', 5, 'preflop', 3), A('fold', 6, 'preflop'),
+        A('call', 1, 'preflop', 3), A('fold', 2, 'preflop'), A('fold', 3, 'preflop'),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('bet', 5, 'flop', 3), A('call', 1, 'flop', 3)])
+    const s = extractFlopSpot(h)!
+    expect(s.oopPos).toBe('HJ'); expect(s.ipPos).toBe('BU'); expect(s.ipIsHero).toBe(true)
+    const r = formationReport(extractSpots([h]), 'srp-coldcall', 'flop-b', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)              // hero (IP) faced the c-bet
+    expect(r.prior!.total).toBe(1)                // the OOP c-bet decision
+    expect(r.listSpots[0].cards).toEqual(C('Ah Kd Qc Jh')) // hero's (BU) cards
+  })
+
+  test('3BP OOP vs raiser: hero opens, IP 3-bets, hero calls and is OOP', () => {
+    // LJ[hero](seat4) opens, CO(seat6) 3-bets, hero calls; flop hero bets
+    const h = mk(
+      [[1, 'Dealer', false, 100], [2, 'Small Blind', false, 100], [3, 'Big Blind', false, 100],
+        [4, 'UTG', true, 100], [5, 'UTG+1', false, 100], [6, 'UTG+2', false, 100]],
+      [A('post_blind', 2, 'preflop', 0.5), A('post_blind', 3, 'preflop', 1),
+        A('deal_hole', 4, 'preflop', undefined, C('Ah Ac Kd Qd')), A('deal_hole', 6, 'preflop', undefined, C('Ts 9s 8d 7c')),
+        A('raise', 4, 'preflop', 3), A('fold', 5, 'preflop'), A('raise', 6, 'preflop', 11),
+        A('fold', 1, 'preflop'), A('fold', 2, 'preflop'), A('fold', 3, 'preflop'), A('call', 4, 'preflop', 8),
+        A('deal_flop', undefined as unknown as number, 'flop', undefined, C('Ks 7h 2d')),
+        A('bet', 4, 'flop', 6), A('call', 6, 'flop', 6)])
+    const s = extractFlopSpot(h)!
+    expect(s.potType).toBe('3BP'); expect(s.oopPos).toBe('LJ'); expect(s.ipPos).toBe('CO')
+    const r = formationReport(extractSpots([h]), '3bp-ip', 'flop-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    expect(r.heroNode.total).toBe(1)
+    expect(r.responses.find(n => n.label.includes('vs your bet'))!.total).toBe(1)
   })
 })
 
