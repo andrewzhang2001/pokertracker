@@ -183,11 +183,14 @@ function parseHand(text: string): ParsedHand | null {
 
   let currentStreet: Street = 'preflop'
   const actions: HandAction[] = []
+  let totalPot: number | undefined
 
   for (; i < lines.length; i++) {
     const line = lines[i]
 
     if (/^\*\*\* SUMMARY \*\*\*/.test(line)) continue
+    const potM = line.match(/^Total Pot\(\$?([\d,.]+)\)/)
+    if (potM) { totalPot = parseAmt(potM[1]); continue }
     if (/^(Total Pot|Board |Seat\+)/.test(line)) continue
     if (line === '*** HOLE CARDS ***') continue
 
@@ -221,7 +224,7 @@ function parseHand(text: string): ParsedHand | null {
 
   return {
     handId, tableId, site: 'ignition', date, playedAt, gameType, currency: 'USD',
-    players, smallBlind, bigBlind, actions, initialStep, rawText: text,
+    players, smallBlind, bigBlind, actions, initialStep, rawText: text, totalPot,
   }
 }
 

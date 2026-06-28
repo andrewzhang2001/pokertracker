@@ -77,9 +77,17 @@ function bestScore(hole: number[], board: number[], omaha: boolean): number {
   return best
 }
 
-// Each hand's share of the pot, exactly enumerated over the remaining run-outs.
-// Returns one equity per input hand; they sum to 1.
-export function showdownEquities(holes: ParsedCard[][], board: ParsedCard[], omaha: boolean): number[] {
+function nCk(n: number, k: number): number {
+  if (k < 0 || k > n) return 0
+  let r = 1
+  for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1)
+  return r
+}
+
+// Each hand's share of the pot over the remaining run-outs. Exact enumeration
+// when the number of run-outs is small (flop/turn all-ins), Monte Carlo when it
+// blows up (preflop all-ins). Returns one equity per input hand; they sum to 1.
+export function showdownEquities(holes: ParsedCard[][], board: ParsedCard[], omaha: boolean, mcIters = 12000): number[] {
   const holeInts = holes.map(h => h.map(toInt))
   const boardInts = board.map(toInt)
   const dead = new Set([...holeInts.flat(), ...boardInts])
@@ -101,8 +109,20 @@ export function showdownEquities(holes: ParsedCard[][], board: ParsedCard[], oma
     for (const w of winners) eq[w] += share
     runouts++
   }
-  if (need <= 0) award(boardInts)
-  else for (const idx of combos(deck.length, need)) award([...boardInts, ...idx.map(i => deck[i])])
+
+  if (need <= 0) {
+    award(boardInts)
+  } else if (nCk(deck.length, need) <= 200000) {
+    for (const idx of combos(deck.length, need)) award([...boardInts, ...idx.map(i => deck[i])])
+  } else {
+    for (let it = 0; it < mcIters; it++) {
+      for (let i = 0; i < need; i++) {
+        const j = i + Math.floor(Math.random() * (deck.length - i))
+        const t = deck[i]; deck[i] = deck[j]; deck[j] = t
+      }
+      award([...boardInts, ...deck.slice(0, need)])
+    }
+  }
 
   return runouts ? eq.map(e => e / runouts) : eq
 }

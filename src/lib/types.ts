@@ -43,6 +43,7 @@ export interface ParsedHand {
   actions: HandAction[]
   initialStep: number    // step index to start at (after hole cards dealt)
   rawText: string
+  totalPot?: number      // "Total Pot($X)" from the summary; rake = totalPot − Σ results
 }
 
 // Computed live state at a given step

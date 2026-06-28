@@ -78,6 +78,23 @@ function actionColor(streetAction: string): string {
   return 'bg-slate-700 text-slate-300'
 }
 
+// The dealer button — a small ivory disc, the classic at-a-glance position anchor.
+function DealerButton() {
+  return (
+    <div
+      className="rounded-full flex items-center justify-center font-extrabold select-none"
+      style={{
+        width: 24, height: 24, fontSize: 12, letterSpacing: '-0.5px', color: '#8a1c1c',
+        background: 'radial-gradient(circle at 35% 30%, #ffffff 0%, #efe9d8 60%, #d8cfb4 100%)',
+        border: '1.5px solid rgba(0,0,0,0.3)',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.55), inset 0 1px 1px rgba(255,255,255,0.8)',
+      }}
+    >
+      D
+    </div>
+  )
+}
+
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
   const { seats, chips } = getLayout(hand.players)
   // Postflop showdown equity, recomputed per step (board / live set change).
@@ -165,17 +182,44 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
         )
       })}
 
-      {/* Center: pot chips (left) + community cards (right, always 5 slots) */}
+      {/* Dealer button — sits just to the side of the button seat's chip area,
+          offset perpendicular so it never lands on top of the bet chips. */}
+      {(() => {
+        const btn = state.players.find(p => p.position === 'Dealer')
+          ?? (state.players.length === 2 ? state.players.find(p => p.position === 'Small Blind') : undefined)
+        const sp = btn ? seats[btn.seatNumber] : undefined
+        const cp = btn ? chips[btn.seatNumber] : undefined
+        if (!sp || !cp) return null
+        const dx = sp.x - 50, dy = sp.y - 50
+        const dist = Math.hypot(dx, dy) || 1
+        const nx = dx / dist, ny = dy / dist
+        // perpendicular to the radial line, nudged toward the felt center
+        const bx = cp.x + (-ny) * 9 - nx * 3
+        const by = cp.y + nx * 9 - ny * 3
+        return (
+          <div className="absolute z-10" style={{ left: `${bx}%`, top: `${by}%`, transform: 'translate(-50%, -50%)' }}>
+            <DealerButton />
+          </div>
+        )
+      })()}
+
+      {/* Center: pot chips (left) + community cards (right, always 5 slots).
+          Like a real table, chips still wagered this street sit in front of each
+          player, so the middle pot excludes them until the street is collected. */}
       <div className="absolute inset-0 flex items-center justify-center">
         <div className="flex items-center gap-5">
-          {state.pot > 0 && (
+          {(() => {
+            const inFront = state.players.reduce((s, p) => s + (p.folded ? 0 : p.streetBet), 0)
+            const middlePot = state.pot - inFront
+            return middlePot > 0 ? (
             <div className="flex flex-col items-center gap-1">
-              <ChipStack amountBB={state.pot / hand.bigBlind} />
+              <ChipStack amountBB={middlePot / hand.bigBlind} />
               <span className="text-yellow-300 font-bold bg-black/40 px-1.5 rounded" style={{ fontSize: 11 }}>
-                {bbStr(state.pot, hand.bigBlind)}
+                {bbStr(middlePot, hand.bigBlind)}
               </span>
             </div>
-          )}
+            ) : null
+          })()}
           {state.communityCards.length > 0 && (
             <div className="flex gap-1.5">
               {[0, 1, 2, 3, 4].map(i =>

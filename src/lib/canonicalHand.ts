@@ -1,7 +1,7 @@
 import type { ParsedHand } from './types'
 import { analyzeHand, type HandAnalysis } from './analyzeHand'
-import { computeHandState } from './computeHandState'
 import { displayPosition } from './positionUtils'
+import { handStat } from './graph'
 
 // A row as stored in the `hands` table. snake_case keys match the SQL column
 // names so the API can insert via jsonb_to_recordset without remapping.
@@ -18,6 +18,8 @@ export interface HandRow {
   played_at: number | null      // epoch ms
   hero_position: string | null
   net_bb: number | null
+  adj_net_bb: number | null   // all-in adjusted net (sims computed once, stored)
+  rake_bb: number | null      // rake attributed to hero
   pot_type: string
   analysis: HandAnalysis
   parsed: Omit<ParsedHand, 'rawText'>
@@ -25,18 +27,10 @@ export interface HandRow {
   notes: string | null
 }
 
-function heroNetBB(hand: ParsedHand): number | null {
-  const hero = hand.players.find(p => p.isMe)
-  if (!hero) return null
-  const final = computeHandState(hand, hand.actions.length - 1)
-  const heroFinal = final.players.find(p => p.isMe)
-  if (!heroFinal) return null
-  return (heroFinal.stack - hero.startingStack) / hand.bigBlind
-}
-
 export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
   const analysis = analyzeHand(hand)
   const hero = hand.players.find(p => p.isMe)
+  const stat = handStat(hand)
   const { rawText, ...parsedNoRaw } = hand
   return {
     id: hand.handId,
@@ -48,7 +42,9 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
     currency: hand.currency,
     played_at: hand.playedAt,
     hero_position: hero ? displayPosition(hero.position, hand.players.length) : null,
-    net_bb: heroNetBB(hand),
+    net_bb: stat?.net ?? null,
+    adj_net_bb: stat?.adjNet ?? null,
+    rake_bb: stat?.rake ?? null,
     pot_type: analysis.potType,
     analysis,
     parsed: parsedNoRaw,

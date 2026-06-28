@@ -28,6 +28,9 @@ async function ensureTable() {
       created_at    timestamptz DEFAULT now()
     )
   `
+  // Result columns added later; backfilled on next export of each hand.
+  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS adj_net_bb numeric`
+  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS rake_bb numeric`
 }
 
 export default async function handler(req: Request): Promise<Response> {
@@ -39,6 +42,16 @@ export default async function handler(req: Request): Promise<Response> {
     await ensureTable()
 
     if (req.method === 'GET') {
+      // Lightweight graph feed: just the stored result numbers, oldest first.
+      if (new URL(req.url).searchParams.get('view') === 'graph') {
+        const rows = await sql`
+          SELECT played_at, net_bb, adj_net_bb, rake_bb
+          FROM hands
+          WHERE net_bb IS NOT NULL
+          ORDER BY played_at ASC NULLS LAST, created_at ASC
+        `
+        return Response.json({ rows })
+      }
       const rows = await sql`
         SELECT parsed, raw_text, notes
         FROM hands
@@ -57,18 +70,20 @@ export default async function handler(req: Request): Promise<Response> {
       await sql`
         INSERT INTO hands (
           id, site, game_type, table_size, small_blind, big_blind, currency,
-          played_at, hero_position, net_bb, pot_type, analysis, parsed, raw_text, notes
+          played_at, hero_position, net_bb, adj_net_bb, rake_bb, pot_type, analysis, parsed, raw_text, notes
         )
         SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS x(
           id text, site text, game_type text, table_size int, small_blind numeric,
           big_blind numeric, currency text, played_at bigint, hero_position text,
-          net_bb numeric, pot_type text, analysis jsonb, parsed jsonb, raw_text text, notes text
+          net_bb numeric, adj_net_bb numeric, rake_bb numeric, pot_type text, analysis jsonb, parsed jsonb, raw_text text, notes text
         )
         ON CONFLICT (id) DO UPDATE SET
           analysis      = EXCLUDED.analysis,
           parsed        = EXCLUDED.parsed,
           raw_text      = EXCLUDED.raw_text,
           net_bb        = EXCLUDED.net_bb,
+          adj_net_bb    = EXCLUDED.adj_net_bb,
+          rake_bb       = EXCLUDED.rake_bb,
           pot_type      = EXCLUDED.pot_type,
           played_at     = EXCLUDED.played_at,
           hero_position = EXCLUDED.hero_position,

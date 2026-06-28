@@ -11,6 +11,7 @@ import { ploCombo } from '../ploCombo'
 import { flopTexture, straightPossibleFlop, extractFlopSpot, extractSpots, formationReport } from '../postflop'
 import { classifyFlop, classifyBoard } from '../ploEval'
 import { showdownEquities } from '../equity'
+import { handStat } from '../graph'
 import type { ParsedCard, HandAction, ParsedHand } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -982,5 +983,44 @@ describe('analyzeHand – flop c-bet & multiway spots (PLO data)', () => {
     const a = byId('4899120263') // folds around, BB wins, no flop
     expect(a.pfrSeat).toBe(null)
     expect(a.flopCbet).toBe(null)
+  })
+})
+
+describe('graph – net & rake (attributed only when hero wins)', () => {
+  const C = (s: string): ParsedCard[] =>
+    s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
+  const A = (type: string, seatNumber: number, street: string, amount?: number, cards?: ParsedCard[]): HandAction =>
+    ({ type: type as HandAction['type'], seatNumber, amount, cards, street: street as HandAction['street'], desc: '' })
+
+  // HU, bb=1. Hero(SB) raises to 3, BB calls, flop, hero bets 2, X folds, hero wins.
+  // Total pot 6, hero collects 5.70 → rake 0.30.
+  const base = (winnerSeat: number, betSeat: number): ParsedHand => ({
+    handId: 'g', tableId: '', site: 'ignition', date: '', playedAt: 1, gameType: 'OMAHA Pot Limit',
+    currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '', totalPot: 6,
+    players: [
+      { seatNumber: 1, position: 'Small Blind', isMe: true, startingStack: 100 },
+      { seatNumber: 2, position: 'Big Blind', isMe: false, startingStack: 100 },
+    ],
+    actions: [
+      A('post_blind', 1, 'preflop', 0.5), A('post_blind', 2, 'preflop', 1),
+      A('deal_hole', 1, 'preflop', undefined, C('Ks As 8h 6s')),
+      A('deal_hole', 2, 'preflop', undefined, C('8s Qh Kd Th')),
+      A('raise', 1, 'preflop', 3), A('call', 2, 'preflop', 2),
+      A('deal_flop', undefined as unknown as number, 'flop', undefined, C('2h 2c 3d')),
+      A('bet', betSeat, 'flop', 2), A('fold', betSeat === 1 ? 2 : 1, 'flop'),
+      A('return_bet', betSeat, 'flop', 2), A('result', winnerSeat, 'flop', 5.7),
+    ],
+  } as ParsedHand)
+
+  test('hero wins → rake attributed; net is profit', () => {
+    const s = handStat(base(1, 1))!   // hero (seat 1) bets and wins
+    expect(s.net).toBeCloseTo(2.7, 5)   // won 5.70, put in 3.00
+    expect(s.rake).toBeCloseTo(0.3, 5)  // full pot rake, in BB
+  })
+
+  test('hero folds / villain wins → no rake attributed', () => {
+    const s = handStat(base(2, 2))!   // villain (seat 2) bets and wins
+    expect(s.net).toBeCloseTo(-3, 5)    // hero put in 3.00, won nothing
+    expect(s.rake).toBe(0)
   })
 })
