@@ -204,7 +204,7 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
             posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
             showHoleCards={showHoleCards}
-            equity={showHoleCards ? equities[player.seatNumber] : undefined}
+            equity={showOpponentCards ? equities[player.seatNumber] : undefined}
             x={px}
             y={py}
           />

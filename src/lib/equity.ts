@@ -1,11 +1,10 @@
 import type { ParsedCard, ParsedHand, HandState } from './types'
 
 // ---------------------------------------------------------------------------
-// Monte-Carlo postflop equity. For each player whose hole cards are known we
-// estimate their chance of winning the showdown on the current board, modelling
-// every opponent as a RANDOM hand (we never peek at opponents' actual cards —
-// even when shown at showdown). So equities are "vs an unknown field", not
-// against each other, and won't necessarily sum to 100%.
+// Postflop showdown equity. Given the players still in the pot (with their
+// actual hole cards) and the current board, we EXACTLY enumerate every possible
+// remaining board run-out, award the pot to the best hand each time (split on
+// ties), and return each player's share. Equities sum to 100%.
 // ---------------------------------------------------------------------------
 
 const RV: Record<string, number> = { '2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, '9': 7, T: 8, J: 9, Q: 10, K: 11, A: 12 }
@@ -78,59 +77,49 @@ function bestScore(hole: number[], board: number[], omaha: boolean): number {
   return best
 }
 
-// Equity of `hole` on `board` vs `oppCount` random opponents.
-function equityVsRandom(hole: number[], board: number[], oppCount: number, omaha: boolean, iters: number): number {
-  const holeSize = omaha ? 4 : 2
-  const dead = new Set([...hole, ...board])
+// Each hand's share of the pot, exactly enumerated over the remaining run-outs.
+// Returns one equity per input hand; they sum to 1.
+export function showdownEquities(holes: ParsedCard[][], board: ParsedCard[], omaha: boolean): number[] {
+  const holeInts = holes.map(h => h.map(toInt))
+  const boardInts = board.map(toInt)
+  const dead = new Set([...holeInts.flat(), ...boardInts])
   const deck: number[] = []
   for (let c = 0; c < 52; c++) if (!dead.has(c)) deck.push(c)
-  const need = oppCount * holeSize + (5 - board.length)
+  const need = 5 - board.length
 
-  let equity = 0
-  for (let it = 0; it < iters; it++) {
-    // partial Fisher–Yates to draw `need` distinct cards off the top
-    for (let i = 0; i < need; i++) {
-      const j = i + Math.floor(Math.random() * (deck.length - i))
-      const t = deck[i]; deck[i] = deck[j]; deck[j] = t
+  const eq = new Array(holes.length).fill(0)
+  let runouts = 0
+  const award = (full: number[]) => {
+    let best = -1
+    const winners: number[] = []
+    for (let i = 0; i < holeInts.length; i++) {
+      const s = bestScore(holeInts[i], full, omaha)
+      if (s > best) { best = s; winners.length = 0; winners.push(i) }
+      else if (s === best) winners.push(i)
     }
-    const fullBoard = board.slice()
-    let p = 0
-    for (let i = 0; i < 5 - board.length; i++) fullBoard.push(deck[p++])
-    const my = bestScore(hole, fullBoard, omaha)
-    let ties = 0, beaten = false
-    for (let o = 0; o < oppCount; o++) {
-      const oh: number[] = []
-      for (let k = 0; k < holeSize; k++) oh.push(deck[p++])
-      const os = bestScore(oh, fullBoard, omaha)
-      if (os > my) { beaten = true; break }
-      if (os === my) ties++
-    }
-    if (!beaten) equity += 1 / (1 + ties)
+    const share = 1 / winners.length
+    for (const w of winners) eq[w] += share
+    runouts++
   }
-  return equity / iters
+  if (need <= 0) award(boardInts)
+  else for (const idx of combos(deck.length, need)) award([...boardInts, ...idx.map(i => deck[i])])
+
+  return runouts ? eq.map(e => e / runouts) : eq
 }
 
-const ITERS = 1200
-
-// Convenience wrapper over ParsedCards (used by the UI indirectly + tests).
-export function handEquityVsRandom(hole: ParsedCard[], board: ParsedCard[], oppCount: number, omaha: boolean, iters = ITERS): number {
-  return equityVsRandom(hole.map(toInt), board.map(toInt), oppCount, omaha, iters)
-}
-
-// Equity per seat for the current step. Only players with known hole cards who
-// are still in the hand get one, and only postflop (board ≥ 3 cards).
+// Equity per seat for the current step: the showdown equities of the players
+// still in the pot. Only computed postflop (board ≥ 3) AND only when EVERY live
+// player's hole cards are known (otherwise true shares can't be determined).
 export function computeEquities(hand: ParsedHand, state: HandState): Record<number, number> {
   const board = state.communityCards
   const out: Record<number, number> = {}
   if (board.length < 3) return out
   const live = state.players.filter(p => !p.folded)
-  const oppCount = live.length - 1
-  if (oppCount < 1) return out
+  if (live.length < 2) return out
   const omaha = /OMAHA/i.test(hand.gameType)
-  const boardInts = board.map(toInt)
-  for (const p of live) {
-    if (!p.holeCards || p.holeCards.length < (omaha ? 4 : 2)) continue
-    out[p.seatNumber] = equityVsRandom(p.holeCards.map(toInt), boardInts, oppCount, omaha, ITERS)
-  }
+  const need = omaha ? 4 : 2
+  if (!live.every(p => p.holeCards && p.holeCards.length >= need)) return out
+  const eqs = showdownEquities(live.map(p => p.holeCards!), board, omaha)
+  live.forEach((p, i) => { out[p.seatNumber] = eqs[i] })
   return out
 }

@@ -10,7 +10,7 @@ import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport, leakProfile 
 import { ploCombo } from '../ploCombo'
 import { flopTexture, straightPossibleFlop, extractFlopSpot, extractSpots, formationReport } from '../postflop'
 import { classifyFlop, classifyBoard } from '../ploEval'
-import { handEquityVsRandom } from '../equity'
+import { showdownEquities } from '../equity'
 import type { ParsedCard, HandAction, ParsedHand } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -638,19 +638,26 @@ describe('ploEval – flop hand classification', () => {
     expect(cls('9s 9h 8s 2c', '9d 7s 3s').label).toBe('set, flush draw')
   })
 
-  test('postflop equity vs a random field (Monte Carlo, loose bounds)', () => {
+  test('showdown equities among live hands sum to 100% (exact)', () => {
     const C = (s: string): ParsedCard[] =>
       s.split(' ').map(t => ({ rank: t.slice(0, -1), suit: t.slice(-1) as ParsedCard['suit'] }))
-    // Hold'em: a set on a dry board crushes one random opponent.
-    expect(handEquityVsRandom(C('Ah Ad'), C('As 7c 2d'), 1, false)).toBeGreaterThan(0.9)
-    // The stone-cold nuts (Broadway, no flush possible) = ~100%.
-    expect(handEquityVsRandom(C('Ah Kd'), C('Qs Jc Ts 2h 3d'), 1, false)).toBeGreaterThan(0.98)
-    // 7-2 offsuit on an unrelated board is a big dog to one random hand.
-    expect(handEquityVsRandom(C('7h 2d'), C('Ks Qc Jd'), 1, false)).toBeLessThan(0.35)
-    // More opponents → less equity for the same holding.
-    const heads = handEquityVsRandom(C('Ah Ad'), C('Kc 8d 3s'), 1, false)
-    const four = handEquityVsRandom(C('Ah Ad'), C('Kc 8d 3s'), 4, false)
-    expect(heads).toBeGreaterThan(four)
+    const sum = (a: number[]) => a.reduce((x, y) => x + y, 0)
+
+    // River (no cards to come): the made royal flush wins outright.
+    const riv = showdownEquities([C('Js Ts'), C('Ah Ad')], C('As Ks Qs 2h 3d'), false)
+    expect(riv[0]).toBeCloseTo(1, 6)
+    expect(riv[1]).toBeCloseTo(0, 6)
+
+    // Flop: overpair vs top pair — favorite, but both have live equity, summing to 1.
+    const flop = showdownEquities([C('Ah Ad'), C('Kh Qd')], C('Ks 7h 2d'), false)
+    expect(sum(flop)).toBeCloseTo(1, 6)
+    expect(flop[0]).toBeGreaterThan(flop[1])
+    expect(flop[0]).toBeGreaterThan(0.8)
+
+    // Identical strength → a chopped pot splits 50/50.
+    const chop = showdownEquities([C('Ah Kd'), C('As Kh')], C('Qc Jc Ts 5d 4h'), false)
+    expect(chop[0]).toBeCloseTo(0.5, 6)
+    expect(chop[1]).toBeCloseTo(0.5, 6)
   })
 
   test('classifyBoard on a 4-card turn', () => {
