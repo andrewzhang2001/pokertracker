@@ -1,7 +1,10 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
 
-export const config = { runtime: 'edge' }
+// Node.js runtime (Fluid Compute), not Edge: @clerk/backend pulls in Node crypto
+// that the Edge runtime doesn't support. The Web Request/Response handler below
+// works the same on Node.
+export const config = { runtime: 'nodejs' }
 
 const connectionString =
   process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? process.env.DATABASE_URL_UNPOOLED ?? ''
