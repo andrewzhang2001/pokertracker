@@ -2,8 +2,9 @@ import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
 
 // Node.js runtime (Fluid Compute), not Edge: @clerk/backend pulls in Node crypto
-// that the Edge runtime doesn't support. The Web Request/Response handler below
-// works the same on Node.
+// the Edge runtime doesn't support. On Node, the Web Request/Response handler
+// must be exported via the `fetch` Web Standard shape (see bottom of file) — a
+// bare default function would be invoked with the legacy Node (req, res) args.
 export const config = { runtime: 'nodejs' }
 
 const connectionString =
@@ -56,7 +57,7 @@ async function ensureTable() {
   await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS owner_id text`
 }
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   if (!connectionString) {
     return Response.json({ error: 'Database not configured' }, { status: 500 })
   }
@@ -135,3 +136,6 @@ export default async function handler(req: Request): Promise<Response> {
     return Response.json({ error: String(e) }, { status: 500 })
   }
 }
+
+// Web Standard `fetch` export so the Node runtime hands us a real Web Request.
+export default { fetch: handler }
