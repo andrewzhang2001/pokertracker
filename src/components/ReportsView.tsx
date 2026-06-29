@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
   buildReport, leakProfile, MISTAKE_EPS, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
+  VS3BET_REPORTS, VS3BET_OPENERS, vs3betTagLabel, LIMP_ISO_TAGS, limpIsoTagLabel,
   type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable, type Subject,
 } from '../lib/reports'
 import { loadSolver, solverUrl } from '../lib/solver'
@@ -15,8 +16,14 @@ function fmtPct(n: number) {
 const ALL_SELS: ReportSel[] = [
   ...RFI_POSITIONS.map(pos => ({ type: 'rfi', pos }) as ReportSel),
   ...VS_RFI_DEFENDERS.flatMap(d => openersFor(d).map(o => ({ type: 'vsrfi', defender: d, opener: o }) as ReportSel)),
+  ...VS3BET_REPORTS.map(r => ({ type: 'vs3bet', opener: r.opener, tag: r.tag }) as ReportSel),
+  ...LIMP_ISO_TAGS.map(iso => ({ type: 'limpiso', iso, multiway: 'all' }) as ReportSel),
 ]
-const selKey = (sel: ReportSel) => sel.type === 'rfi' ? `rfi:${sel.pos}` : `vsrfi:${sel.defender}:${sel.opener}`
+const selKey = (sel: ReportSel) =>
+  sel.type === 'rfi' ? `rfi:${sel.pos}`
+    : sel.type === 'vsrfi' ? `vsrfi:${sel.defender}:${sel.opener}`
+    : sel.type === 'vs3bet' ? `vs3bet:${sel.opener}:${sel.tag}`
+    : `limpiso:${sel.iso}`
 
 function Swatch({ rgb, label }: { rgb: string; label: string }) {
   return (
@@ -92,7 +99,7 @@ export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', tit
   const [tables, setTables] = useState<Map<string, SolverTable>>(new Map())
   useEffect(() => {
     let cancelled = false
-    Promise.all(ALL_SELS.map(async sel => {
+    Promise.all(ALL_SELS.filter(sel => solverUrl(sel)).map(async sel => {
       try { return [solverUrl(sel), await loadSolver(sel)] as const } catch { return null }
     })).then(rows => {
       if (cancelled) return
@@ -171,17 +178,43 @@ export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', tit
         <span className="text-gray-600">· intensity = EV/100</span>
       </div>
 
-      <div className="flex flex-col gap-3">
-        <Row label="RFI (open)">
-          {RFI_POSITIONS.map(pos => <Tile key={pos} sel={{ type: 'rfi', pos }} label={pos} />)}
-        </Row>
-        {VS_RFI_DEFENDERS.map(def => (
-          <Row key={def} label={`${def} vs RFI`}>
-            {openersFor(def).map(op => (
-              <Tile key={op} sel={{ type: 'vsrfi', defender: def, opener: op }} label={`vs ${op}`} />
+      <div className="flex gap-8 items-start flex-wrap">
+        {/* SRP — opens + defending vs a single raise */}
+        <div className="flex flex-col gap-3">
+          <div className="text-xs uppercase tracking-wide text-gray-600 pl-[7.75rem]">SRP</div>
+          <Row label="RFI (open)">
+            {RFI_POSITIONS.map(pos => <Tile key={pos} sel={{ type: 'rfi', pos }} label={pos} />)}
+          </Row>
+          {VS_RFI_DEFENDERS.map(def => (
+            <Row key={def} label={`${def} vs RFI`}>
+              {openersFor(def).map(op => (
+                <Tile key={op} sel={{ type: 'vsrfi', defender: def, opener: op }} label={`vs ${op}`} />
+              ))}
+            </Row>
+          ))}
+        </div>
+
+        {/* 3BP — the opener facing a 3-bet */}
+        <div className="flex flex-col gap-3">
+          <div className="text-xs uppercase tracking-wide text-gray-600 pl-[7.75rem]">vs 3-bet (3BP)</div>
+          {VS3BET_OPENERS.map(op => (
+            <Row key={op} label={`${op} vs 3-bet`}>
+              {VS3BET_REPORTS.filter(r => r.opener === op).map(r => (
+                <Tile key={r.tag} sel={{ type: 'vs3bet', opener: op, tag: r.tag }} label={`vs ${vs3betTagLabel(r.tag)}`} />
+              ))}
+            </Row>
+          ))}
+        </div>
+
+        {/* Limped pots — the original limper facing an iso-raise */}
+        <div className="flex flex-col gap-3">
+          <div className="text-xs uppercase tracking-wide text-gray-600 pl-[7.75rem]">limp vs iso</div>
+          <Row label="limper vs iso">
+            {LIMP_ISO_TAGS.map(iso => (
+              <Tile key={iso} sel={{ type: 'limpiso', iso, multiway: 'all' }} label={`vs ${limpIsoTagLabel(iso)}`} />
             ))}
           </Row>
-        ))}
+        </div>
       </div>
     </div>
   )
@@ -194,9 +227,10 @@ interface Props {
   result: ReportResult
   onOpenHands: (hands: ParsedHand[], index: number) => void
   onBack: () => void
+  headerExtra?: React.ReactNode
 }
 
-export default function ReportsView({ result, onOpenHands, onBack }: Props) {
+export default function ReportsView({ result, onOpenHands, onBack, headerExtra }: Props) {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
@@ -208,6 +242,7 @@ export default function ReportsView({ result, onOpenHands, onBack }: Props) {
         </button>
         <span className="text-white font-semibold">{result.title}</span>
         <span className="text-gray-500 text-xs">{result.subtitle}</span>
+        {headerExtra}
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-4">
@@ -238,8 +273,8 @@ export default function ReportsView({ result, onOpenHands, onBack }: Props) {
           )}
         </div>
 
-        {/* GTO EV analysis */}
-        {result.total > 0 && (
+        {/* GTO EV analysis (skipped for solverless reports, e.g. limp vs iso) */}
+        {result.total > 0 && !result.solverless && (
           <div className="max-w-2xl mx-auto mb-6">
             {!result.ev ? (
               <p className="text-center text-gray-600 text-xs">Loading GTO EVs…</p>
@@ -305,7 +340,11 @@ function BucketColumn({ bucket, onOpenHands }: {
                 : <span className="text-gray-600 text-xs">??</span>}
             </div>
             <span className="text-xs ml-auto shrink-0">
-              {e.evLossBb !== undefined && e.evLossBb > MISTAKE_EPS && (
+              {e.outOfRange ? (
+                <span className="text-red-400 mr-2" title="opened a hand outside the GTO RFI range — no solver EV, excluded from EV/100">
+                  not in range
+                </span>
+              ) : e.evLossBb !== undefined && e.evLossBb > MISTAKE_EPS && (
                 <span className="text-red-400 mr-2" title="EV lost vs GTO · GTO-best action">
                   −{e.evLossBb.toFixed(2)}{e.bestAction && ` (${e.bestAction})`}
                 </span>

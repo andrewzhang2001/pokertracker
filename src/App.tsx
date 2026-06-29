@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
+import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
-import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, type ReportSel, type SolverTable } from './lib/reports'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
@@ -40,6 +41,19 @@ function parseReportSel(p: string): ReportSel | null {
     if ((VS_RFI_DEFENDERS as readonly string[]).includes(defender) && openersFor(defender).includes(opener))
       return { type: 'vsrfi', defender, opener }
   }
+  m = p.match(/^\/(?:reports|leakbuster)\/vs3bet\/([a-z]+)\/(ip|oop|bb)/i)
+  if (m) {
+    const opener = m[1].toUpperCase(), tag = m[2].toLowerCase() as Vs3betTag
+    if (VS3BET_REPORTS.some(r => r.opener === opener && r.tag === tag))
+      return { type: 'vs3bet', opener, tag }
+  }
+  m = p.match(/^\/(?:reports|leakbuster)\/limpiso\/(ip|oop)/i)
+  if (m) {
+    const iso = m[1].toLowerCase() as LimpIsoTag
+    const mw = new URLSearchParams(window.location.search).get('mw')
+    const multiway: LimpMultiway = mw === 'hu' || mw === 'multi' ? mw : 'all'
+    return { type: 'limpiso', iso, multiway }
+  }
   return null
 }
 // /postflop/:formationId/:nodeId — the chosen formation + decision node.
@@ -50,7 +64,11 @@ function parsePostflopSel(p: string): { formationId: string; nodeId: string } | 
 function reportUrl(sel: ReportSel, base: string): string {
   return sel.type === 'rfi'
     ? `${base}/rfi/${sel.pos.toLowerCase()}`
-    : `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
+    : sel.type === 'vsrfi'
+      ? `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
+      : sel.type === 'vs3bet'
+        ? `${base}/vs3bet/${sel.opener.toLowerCase()}/${sel.tag}`
+        : `${base}/limpiso/${sel.iso}${sel.multiway !== 'all' ? `?mw=${sel.multiway}` : ''}`
 }
 
 export default function App() {
@@ -100,11 +118,12 @@ export default function App() {
       })
   }, [dbHands, dbNotes, vpipFilter])
 
+  // Your own hands — the personal database browser.
   async function loadDatabase() {
     setDbStatus('loading')
     setDbError(null)
     try {
-      const { hands, notes } = await fetchHandsFromDb()
+      const { hands, notes } = await fetchHandsFromDb(true)
       setDbHands(hands)
       setDbNotes(notes)
       setDbStatus('idle')
@@ -114,11 +133,12 @@ export default function App() {
     }
   }
 
-  async function loadReports() {
+  // Leakbuster = your hands only; Reports/Postflop = the pooled sample.
+  async function loadReports(mine: boolean) {
     setReportStatus('loading')
     setReportError(null)
     try {
-      const { hands } = await fetchHandsFromDb()
+      const { hands } = await fetchHandsFromDb(mine)
       setReportHands(hands)
       setReportStatus('idle')
     } catch (e) {
@@ -140,7 +160,7 @@ export default function App() {
   // Fetch data when entering database/reports/leakbuster/postflop (covers direct loads & refresh).
   useEffect(() => {
     if (view === 'database') loadDatabase()
-    else if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports()
+    else if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports(view === 'leakbuster')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -149,6 +169,7 @@ export default function App() {
     const sel = parseReportSel(path)
     if ((view !== 'reports' && view !== 'leakbuster') || !sel) return
     const url = solverUrl(sel)
+    if (!url) return // solverless report (e.g. limp vs iso)
     let cancelled = false
     loadSolver(sel).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
     return () => { cancelled = true }
@@ -221,6 +242,7 @@ export default function App() {
   if (view === 'landing') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-8">
+        <div className="absolute top-3 right-3"><UserButton afterSignOutUrl="/" /></div>
         <h1 className="text-4xl font-bold text-white">Poker Hand Tracker</h1>
         {(() => {
           const Card = ({ to, icon, title, desc, onClick }: { to?: string; icon: string; title: string; desc: string; onClick?: () => void }) => (
@@ -335,9 +357,21 @@ export default function App() {
       return <ReportsMenu hands={reportHands} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
     const solverTable = solver && solver.url === solverUrl(reportSel) ? solver.table : undefined
+    // Limp-vs-iso reports carry a heads-up / multiway filter in the URL query.
+    const mwToggle = reportSel.type === 'limpiso' ? (
+      <div className="ml-auto flex rounded-full border border-gray-700 overflow-hidden text-xs">
+        {(['all', 'hu', 'multi'] as LimpMultiway[]).map(m => (
+          <button key={m} onClick={() => navigate(reportUrl({ ...reportSel, multiway: m }, base), true)}
+            className={`px-3 py-1 transition-colors ${reportSel.multiway === m ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
+            {m === 'all' ? 'All' : m === 'hu' ? 'Heads-up' : 'Multiway'}
+          </button>
+        ))}
+      </div>
+    ) : undefined
     return (
       <ReportsView
         result={buildReport(reportHands, reportSel, solverTable, subject)}
+        headerExtra={mwToggle}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
       />

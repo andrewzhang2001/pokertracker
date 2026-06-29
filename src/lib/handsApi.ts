@@ -1,14 +1,16 @@
 import type { ParsedHand } from './types'
 import { canonicalizeHand, rowToParsedHand } from './canonicalHand'
 import type { GraphRow } from './graph'
+import { authHeaders } from './auth'
 
 // Export every parsed hand to the database (bulk, idempotent upsert by hand id).
-// Notes are aligned by index with the hands array.
+// Notes are aligned by index with the hands array. The server stamps each row
+// with the signed-in account (owner) from the bearer token.
 export async function exportHandsToDb(hands: ParsedHand[], notes: string[]): Promise<number> {
   const rows = hands.map((h, i) => canonicalizeHand(h, notes[i]))
   const res = await fetch('/api/hands', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify({ hands: rows }),
   })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Export failed')
@@ -16,10 +18,9 @@ export async function exportHandsToDb(hands: ParsedHand[], notes: string[]): Pro
   return inserted
 }
 
-// Lightweight graph feed — precomputed per-hand result numbers (no parsing/sims).
-// The full dataset always lives in the DB, so this is the only source.
+// Lightweight graph feed — YOUR precomputed per-hand result numbers (no parsing).
 export async function fetchGraphFromDb(): Promise<GraphRow[]> {
-  const res = await fetch('/api/hands?view=graph')
+  const res = await fetch('/api/hands?view=graph', { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load graph')
   const data = await res.json() as { rows?: { played_at: number | null; net_bb: number; adj_net_bb: number | null; rake_bb: number | null }[] }
   return (data.rows ?? []).map(r => ({
@@ -30,8 +31,10 @@ export async function fetchGraphFromDb(): Promise<GraphRow[]> {
   }))
 }
 
-export async function fetchHandsFromDb(): Promise<{ hands: ParsedHand[]; notes: string[] }> {
-  const res = await fetch('/api/hands')
+// `mine` → just your hands (your-hands review / Leakbuster); otherwise the whole
+// pooled sample (population Reports + Postflop spots).
+export async function fetchHandsFromDb(mine = false): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const res = await fetch(mine ? '/api/hands?view=mine' : '/api/hands', { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
   const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string; notes: string | null }[] }
   return {

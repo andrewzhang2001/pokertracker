@@ -3,6 +3,10 @@
 // (2000) to bb and rounded. Output (served as static files, fetched per report):
 //   public/solver/rfi/<pos>.json        { combo: [foldEvBb, raiseEvBb] }
 //   public/solver/vsrfi/<def>-<opener>.json { combo: [foldEvBb, callEvBb, raiseEvBb] }
+//   public/solver/vs3bet/<opener>-<tag>.json { combo: [foldEvBb, callEvBb, fourBetEvBb] }
+//     tag = ip (uses the vs-BU solution) / oop (uses vs-SB) / bb (SB vs BB).
+//     Only ~3086 in-range combos exist (the opener's RFI range); hands the
+//     opener shouldn't have opened are absent → no EV (flagged "not in range").
 //
 // Run: node scripts/build-solver.mjs [path-to-prelo-100bb-dir]
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, statSync } from 'fs'
@@ -58,6 +62,28 @@ for (const def of readdirSync(vsRoot)) {
     const n = writeTable(out, [...pot.keys()], [fold, call, pot])
     console.log(`vsrfi/${def.toLowerCase()}-${opener.toLowerCase()}.json  (${n} combos)`); total++
   }
+}
+
+// vs 3-bet: the opener faces a 3-bet. We keep only two strategically-distinct
+// solutions per opener — IP 3-bettor (represented by vs BU) and OOP 3-bettor
+// (represented by vs SB) — plus SB's lone "vs BB" spot. [opener, tag, source].
+const VS3BET = [
+  ['LJ', 'ip', 'BU'], ['LJ', 'oop', 'SB'],
+  ['HJ', 'ip', 'BU'], ['HJ', 'oop', 'SB'],
+  ['CO', 'ip', 'BU'], ['CO', 'oop', 'SB'],
+  ['BU', 'oop', 'SB'],
+  ['SB', 'bb', 'BB'],
+]
+const vs3Root = resolve(SRC, 'vs 3bet')
+for (const [opener, tag, source] of VS3BET) {
+  const dir = resolve(vs3Root, opener, `vs ${source}`)
+  if (!existsSync(dir)) { console.warn('skip vs3bet', opener, tag); continue }
+  const fold = loadAction(resolve(dir, 'FOLD.json'))
+  const call = loadAction(resolve(dir, 'CALL.json'))
+  const pot = loadAction(resolve(dir, 'POT.json'))
+  const out = resolve(root, 'public/solver/vs3bet', `${opener.toLowerCase()}-${tag}.json`)
+  const n = writeTable(out, [...pot.keys()], [fold, call, pot])
+  console.log(`vs3bet/${opener.toLowerCase()}-${tag}.json  (${n} combos)`); total++
 }
 
 console.log(`\nDone. ${total} tables written to public/solver/`)

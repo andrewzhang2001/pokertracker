@@ -1,10 +1,11 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
-  extractSpots, formationReport, FORMATIONS, getNode, nodeLabel,
+  extractSpots, formationReport, FORMATIONS, getNode, nodeLabel, parseFilter, writeFilter,
   type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType,
 } from '../lib/postflop'
 import PlayingCard from './PlayingCard'
+import PostflopFilters from './PostflopFilters'
 
 // Mode + board filters live in the URL query so they survive drill-down/back/refresh.
 // Formation + node come from the path (props).
@@ -13,11 +14,7 @@ function readState() {
   const opt = <T extends string>(v: string | null, allowed: T[], dflt: T): T => (allowed as string[]).includes(v ?? '') ? (v as T) : dflt
   return {
     mode: opt<PostflopMode>(q.get('m'), ['hero', 'population'], 'hero'),
-    filter: {
-      suits: opt(q.get('suits'), ['any', 'rainbow', 'twotone', 'mono'], 'any'),
-      paired: opt(q.get('paired'), ['any', 'paired', 'unpaired'], 'any'),
-      straight: opt(q.get('straight'), ['any', 'yes', 'no'], 'any'),
-    } as PostflopFilter,
+    filter: parseFilter(q),
   }
 }
 
@@ -121,22 +118,11 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
   // Mirror state into the URL (replace, so it doesn't spam history) so back/refresh restore it.
   useEffect(() => {
     const q = new URLSearchParams({ m: mode })
-    if (filter.suits !== 'any') q.set('suits', filter.suits)
-    if (filter.paired !== 'any') q.set('paired', filter.paired)
-    if (filter.straight !== 'any') q.set('straight', filter.straight)
+    writeFilter(q, filter)
     history.replaceState(null, '', `/postflop/${formationId}/${nodeId}?${q}`)
   }, [formationId, nodeId, mode, filter])
 
   const set = (patch: Partial<PostflopFilter>) => setFilter(f => ({ ...f, ...patch }))
-  const Select = <K extends keyof PostflopFilter>({ label, k, opts }: { label: string; k: K; opts: [PostflopFilter[K], string][] }) => (
-    <label className="flex items-center gap-1.5 text-xs text-gray-400">
-      {label}
-      <select value={filter[k] as string} onChange={e => set({ [k]: e.target.value } as Partial<PostflopFilter>)}
-        className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:border-yellow-500">
-        {opts.map(([v, lbl]) => <option key={String(v)} value={String(v)}>{lbl}</option>)}
-      </select>
-    </label>
-  )
 
   const handList = r.listSpots.map(x => x.spot.hand)
 
@@ -153,10 +139,8 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
             </button>
           ))}
         </div>
-        <div className="ml-auto flex items-center gap-3 flex-wrap">
-          <Select label="Suits" k="suits" opts={[['any', 'any'], ['rainbow', 'rainbow'], ['twotone', 'two-tone'], ['mono', 'monotone']]} />
-          <Select label="Board" k="paired" opts={[['any', 'any'], ['unpaired', 'unpaired'], ['paired', 'paired']]} />
-          <Select label="Straight" k="straight" opts={[['any', 'any'], ['yes', 'possible'], ['no', 'no straight']]} />
+        <div className="ml-auto">
+          <PostflopFilters filter={filter} onChange={set} />
         </div>
       </div>
 

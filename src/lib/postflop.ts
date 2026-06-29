@@ -20,23 +20,40 @@ const MIN_EFF_BB = 75         // effective stack (min of the two players)
 const RFI_MIN_BB = 3.0        // the open must be a real raise
 const THREEBET_MIN_POT = 0.75 // the 3-bet must be ~pot-sized (no tiny 3-bets)
 
+export const RANKS_DESC = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
+
 export type SuitTexture = 'mono' | 'twotone' | 'rainbow'
 export interface FlopTexture { suits: SuitTexture; paired: boolean }
 export function flopTexture(flop: ParsedCard[]): FlopTexture {
-  const suits = new Set(flop.map(c => c.suit)).size
-  return { suits: suits === 1 ? 'mono' : suits === 2 ? 'twotone' : 'rainbow', paired: new Set(flop.map(c => c.rank)).size < flop.length }
+  return { suits: boardSuits(flop), paired: boardPaired(flop) }
 }
-// A made straight is possible on the flop iff the 3 board cards are distinct
-// ranks that fit in a 5-card window (max−min ≤ 4), A high or low. (Q63 = no.)
-export function straightPossibleFlop(flop: ParsedCard[]): boolean {
-  const reps = flop.map(c => (RV[c.rank] === 14 ? [14, 1] : [RV[c.rank]]))
-  const combos = reps.reduce<number[][]>((acc, opts) => acc.flatMap(a => opts.map(o => [...a, o])), [[]])
-  for (const c of combos) {
-    const distinct = [...new Set(c)]
-    if (distinct.length === 3 && Math.max(...distinct) - Math.min(...distinct) <= 4) return true
-  }
+// Suit texture by distinct-suit count (generalizes across flop/turn/river):
+// 1 = mono, 2 = two-tone, 3+ = rainbow.
+export function boardSuits(board: ParsedCard[]): SuitTexture {
+  const n = new Set(board.map(c => c.suit)).size
+  return n === 1 ? 'mono' : n === 2 ? 'twotone' : 'rainbow'
+}
+// A board is "paired" if any rank repeats among its cards.
+export const boardPaired = (board: ParsedCard[]): boolean => new Set(board.map(c => c.rank)).size < board.length
+
+// A made straight is possible iff some 3 board cards are distinct ranks that
+// fit in a 5-card window (max−min ≤ 4), A high or low. In PLO you must use
+// exactly 3 board cards, so this generalizes across flop/turn/river: evaluate
+// all the dealt board cards (Q63 = no; on the turn the 4th card may complete it).
+export function straightPossibleBoard(board: ParsedCard[]): boolean {
+  const sets = board.map(c => (RV[c.rank] === 14 ? [14, 1] : [RV[c.rank]]))
+  const n = board.length
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++)
+      for (let k = j + 1; k < n; k++)
+        for (const a of sets[i]) for (const b of sets[j]) for (const c of sets[k]) {
+          const d = [...new Set([a, b, c])]
+          if (d.length === 3 && Math.max(...d) - Math.min(...d) <= 4) return true
+        }
   return false
 }
+// Flop-only alias (kept for tests / call sites that pass exactly 3 cards).
+export const straightPossibleFlop = straightPossibleBoard
 
 export type FlopActor = 'oop' | 'ip'
 export type FlopActType = 'check' | 'bet' | 'call' | 'raise' | 'fold'
@@ -57,14 +74,23 @@ export interface FlopSpot {
   flop: ParsedCard[]
   texture: FlopTexture
   straighty: boolean       // a made straight is possible on this flop
+  flopRanks: string[]      // flop ranks sorted high→low (e.g. QQ2 → ['Q','Q','2'])
   actions: FlopAction[]    // flop action sequence
-  // turn (null if the hand didn't reach the turn)
+  // turn (null if the hand didn't reach the turn). Texture flags evaluate the
+  // 4-card board (flop + turn), so "turn straight" = straight made by the turn.
   turnCard: ParsedCard | null
+  turnSuits?: SuitTexture
+  turnPaired?: boolean
+  turnStraighty?: boolean
   turnActions: FlopAction[]
   oopTurnClass?: HandClass
   ipTurnClass?: HandClass
-  // river (null if the hand didn't reach the river)
+  // river (null if the hand didn't reach the river). Texture flags evaluate the
+  // full 5-card board.
   riverCard: ParsedCard | null
+  riverSuits?: SuitTexture
+  riverPaired?: boolean
+  riverStraighty?: boolean
   riverActions: FlopAction[]
   oopRiverClass?: HandClass
   ipRiverClass?: HandClass
@@ -162,15 +188,24 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
   const flopKlass = (c: ParsedCard[] | null) => (c && ok ? classifyFlop(c, flop) : undefined)
   const turnKlass = (c: ParsedCard[] | null) => (c && ok && turnCard ? classifyBoard(c, [...flop, turnCard]) : undefined)
   const riverKlass = (c: ParsedCard[] | null) => (c && ok && turnCard && riverCard ? classifyBoard(c, [...flop, turnCard, riverCard]) : undefined)
+  const turnBoard = turnCard ? [...flop, turnCard] : null
+  const riverBoard = turnCard && riverCard ? [...flop, turnCard, riverCard] : null
   return {
     handId: hand.handId, hand, potType,
     oopPos: displayPosition(player(oopSeat).position, n),
     ipPos: displayPosition(player(ipSeat).position, n),
     oopIsHero: player(oopSeat).isMe, ipIsHero: player(ipSeat).isMe,
     oopCards, ipCards, oopClass: flopKlass(oopCards), ipClass: flopKlass(ipCards),
-    flop, texture: flopTexture(flop), straighty: straightPossibleFlop(flop), actions,
+    flop, texture: flopTexture(flop), straighty: straightPossibleBoard(flop), actions,
+    flopRanks: [...flop].sort((a, b) => RV[b.rank] - RV[a.rank]).map(c => c.rank),
     turnCard, turnActions, oopTurnClass: turnKlass(oopCards), ipTurnClass: turnKlass(ipCards),
+    turnSuits: turnBoard ? boardSuits(turnBoard) : undefined,
+    turnPaired: turnBoard ? boardPaired(turnBoard) : undefined,
+    turnStraighty: turnBoard ? straightPossibleBoard(turnBoard) : undefined,
     riverCard, riverActions, oopRiverClass: riverKlass(oopCards), ipRiverClass: riverKlass(ipCards),
+    riverSuits: riverBoard ? boardSuits(riverBoard) : undefined,
+    riverPaired: riverBoard ? boardPaired(riverBoard) : undefined,
+    riverStraighty: riverBoard ? straightPossibleBoard(riverBoard) : undefined,
   }
 }
 
@@ -456,12 +491,61 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
   return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, hands: reaching.map(s => s.hand) }
 }
 
+export type YesNoAny = 'any' | 'yes' | 'no'
+export type SuitFilter = SuitTexture | 'any'
 export interface PostflopFilter {
-  suits: SuitTexture | 'any'
-  paired: 'any' | 'paired' | 'unpaired'
-  straight: 'any' | 'yes' | 'no'   // a made straight possible on the flop
+  // suit / paired / straight evaluated per street (turn = 4-card board,
+  // river = 5-card board); flop fields are the 3-card board.
+  suits: SuitFilter
+  paired: YesNoAny
+  straight: YesNoAny
+  turnSuits: SuitFilter
+  turnPaired: YesNoAny
+  turnStraight: YesNoAny
+  riverSuits: SuitFilter
+  riverPaired: YesNoAny
+  riverStraight: YesNoAny
+  // flop card-rank selectors: allowed ranks for the high / 2nd-high / 3rd-high
+  // flop card (empty = any). Pairs match either row (QQ2 → Q is both high & mid).
+  flopHigh: string[]
+  flopMid: string[]
+  flopLow: string[]
 }
 export type PostflopMode = 'hero' | 'population'
+
+export const EMPTY_FILTER: PostflopFilter = {
+  suits: 'any', paired: 'any', straight: 'any',
+  turnSuits: 'any', turnPaired: 'any', turnStraight: 'any',
+  riverSuits: 'any', riverPaired: 'any', riverStraight: 'any',
+  flopHigh: [], flopMid: [], flopLow: [],
+}
+
+// Filter ⇆ URL query (so board filters survive drill-down / back / refresh).
+export function parseFilter(q: URLSearchParams): PostflopFilter {
+  const yn = (v: string | null): YesNoAny => (v === 'yes' || v === 'no' ? v : 'any')
+  const su = (v: string | null): SuitFilter => (['rainbow', 'twotone', 'mono'] as const).includes(v as SuitTexture) ? (v as SuitTexture) : 'any'
+  const ranks = (v: string | null) => (v ? v.split(',').filter(r => RANKS_DESC.includes(r)) : [])
+  return {
+    suits: su(q.get('suits')), paired: yn(q.get('paired')), straight: yn(q.get('straight')),
+    turnSuits: su(q.get('tsuits')), turnPaired: yn(q.get('tpaired')), turnStraight: yn(q.get('tstraight')),
+    riverSuits: su(q.get('rsuits')), riverPaired: yn(q.get('rpaired')), riverStraight: yn(q.get('rstraight')),
+    flopHigh: ranks(q.get('fh')), flopMid: ranks(q.get('fm')), flopLow: ranks(q.get('fc')),
+  }
+}
+export function writeFilter(q: URLSearchParams, f: PostflopFilter) {
+  if (f.suits !== 'any') q.set('suits', f.suits)
+  if (f.paired !== 'any') q.set('paired', f.paired)
+  if (f.straight !== 'any') q.set('straight', f.straight)
+  if (f.turnSuits !== 'any') q.set('tsuits', f.turnSuits)
+  if (f.turnPaired !== 'any') q.set('tpaired', f.turnPaired)
+  if (f.turnStraight !== 'any') q.set('tstraight', f.turnStraight)
+  if (f.riverSuits !== 'any') q.set('rsuits', f.riverSuits)
+  if (f.riverPaired !== 'any') q.set('rpaired', f.riverPaired)
+  if (f.riverStraight !== 'any') q.set('rstraight', f.riverStraight)
+  if (f.flopHigh.length) q.set('fh', f.flopHigh.join(','))
+  if (f.flopMid.length) q.set('fm', f.flopMid.join(','))
+  if (f.flopLow.length) q.set('fc', f.flopLow.join(','))
+}
 
 // ---- spot extraction + filtering ----
 export function extractSpots(hands: ParsedHand[]): FlopSpot[] {
@@ -469,14 +553,31 @@ export function extractSpots(hands: ParsedHand[]): FlopSpot[] {
   for (const h of hands) { const s = extractFlopSpot(h); if (s) out.push(s) }
   return out
 }
+// yes/no filter on an optional flag; when the board hasn't reached that street
+// (cond === undefined) an active yes/no filter excludes the spot.
+const matchYN = (v: YesNoAny, cond: boolean | undefined) =>
+  v === 'any' || (cond !== undefined && cond === (v === 'yes'))
+const matchSuit = (v: SuitFilter, t: SuitTexture | undefined) => v === 'any' || t === v
+const matchRank = (sel: string[], rank: string | undefined) =>
+  sel.length === 0 || (rank !== undefined && sel.includes(rank))
+
 function filterFormation(spots: FlopSpot[], f: Formation, filter: PostflopFilter): FlopSpot[] {
   return spots.filter(s =>
     s.potType === f.potType &&
     f.oopRoles.includes(s.oopPos) &&
     f.ipRoles.includes(s.ipPos) &&
-    (filter.suits === 'any' || s.texture.suits === filter.suits) &&
-    (filter.paired === 'any' || s.texture.paired === (filter.paired === 'paired')) &&
-    (filter.straight === 'any' || s.straighty === (filter.straight === 'yes')))
+    matchSuit(filter.suits, s.texture.suits) &&
+    matchYN(filter.paired, s.texture.paired) &&
+    matchYN(filter.straight, s.straighty) &&
+    matchSuit(filter.turnSuits, s.turnSuits) &&
+    matchYN(filter.turnPaired, s.turnPaired) &&
+    matchYN(filter.turnStraight, s.turnStraighty) &&
+    matchSuit(filter.riverSuits, s.riverSuits) &&
+    matchYN(filter.riverPaired, s.riverPaired) &&
+    matchYN(filter.riverStraight, s.riverStraighty) &&
+    matchRank(filter.flopHigh, s.flopRanks[0]) &&
+    matchRank(filter.flopMid, s.flopRanks[1]) &&
+    matchRank(filter.flopLow, s.flopRanks[2]))
 }
 const actingIsMe = (s: FlopSpot, a: FlopActor) => (a === 'oop' ? s.oopIsHero : s.ipIsHero)
 const heroInvolved = (s: FlopSpot) => s.oopIsHero || s.ipIsHero

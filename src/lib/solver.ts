@@ -7,7 +7,11 @@ const cache = new Map<string, Promise<SolverTable>>()
 export function solverUrl(sel: ReportSel): string {
   return sel.type === 'rfi'
     ? `/solver/rfi/${sel.pos.toLowerCase()}.json`
-    : `/solver/vsrfi/${sel.defender.toLowerCase()}-${sel.opener.toLowerCase()}.json`
+    : sel.type === 'vsrfi'
+      ? `/solver/vsrfi/${sel.defender.toLowerCase()}-${sel.opener.toLowerCase()}.json`
+      : sel.type === 'vs3bet'
+        ? `/solver/vs3bet/${sel.opener.toLowerCase()}-${sel.tag}.json`
+        : '' // limpiso — no GTO baseline
 }
 
 export function loadSolver(sel: ReportSel): Promise<SolverTable> {

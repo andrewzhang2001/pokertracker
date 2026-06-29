@@ -6,9 +6,9 @@ import { parseHandHistories } from '../parseHandHistory'
 import { computeHandState } from '../computeHandState'
 import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
-import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, buildReport, leakProfile } from '../reports'
+import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, vs3betSpots, vs3betReport, limpVsIsoSpots, limpVsIsoReport, buildReport, leakProfile } from '../reports'
 import { ploCombo } from '../ploCombo'
-import { flopTexture, straightPossibleFlop, extractFlopSpot, extractSpots, formationReport } from '../postflop'
+import { flopTexture, straightPossibleFlop, straightPossibleBoard, boardPaired, boardSuits, extractFlopSpot, extractSpots, formationReport, EMPTY_FILTER } from '../postflop'
 import { classifyFlop, classifyBoard } from '../ploEval'
 import { showdownEquities } from '../equity'
 import { handStat } from '../graph'
@@ -530,6 +530,113 @@ describe('RFI reports (population, by position)', () => {
     // lower the threshold and it counts
     expect(vsRfiReport([hand], { defender: 'BB', opener: 'BU', minBB: 40, subject: 'population' }).total).toBe(1)
   })
+
+  // ---- vs-3-bet ----
+  // 6-max synthetic: UTG=LJ, UTG+1=HJ, UTG+2=CO, Dealer=BU, plus SB/BB.
+  const mk6 = (acts: [string, number, number?][], stacks: Partial<Record<number, number>> = {}): ParsedHand => ({
+    handId: 's3b', tableId: '', site: 'ignition', date: '', playedAt: 0,
+    gameType: 'OMAHA Pot Limit', currency: 'USD', smallBlind: 0.5, bigBlind: 1, initialStep: 0, rawText: '',
+    players: [
+      { seatNumber: 1, position: 'UTG', isMe: false, startingStack: stacks[1] ?? 100 },     // LJ
+      { seatNumber: 2, position: 'UTG+1', isMe: false, startingStack: stacks[2] ?? 100 },   // HJ
+      { seatNumber: 3, position: 'UTG+2', isMe: false, startingStack: stacks[3] ?? 100 },   // CO
+      { seatNumber: 4, position: 'Dealer', isMe: false, startingStack: stacks[4] ?? 100 },  // BU
+      { seatNumber: 5, position: 'Small Blind', isMe: false, startingStack: stacks[5] ?? 100 },
+      { seatNumber: 6, position: 'Big Blind', isMe: false, startingStack: stacks[6] ?? 100 },
+    ],
+    actions: acts.map(([type, seatNumber, amount]) =>
+      ({ type: type as HandAction['type'], seatNumber, amount, street: 'preflop', desc: '' })),
+  } as ParsedHand)
+
+  test('vs3betSpots: LJ opens, BU 3-bets (IP), LJ calls', () => {
+    const h = mk6([
+      ['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 12], ['fold', 5], ['fold', 6], ['call', 1, 8.5],
+    ])
+    const spots = vs3betSpots(h)
+    expect(spots.length).toBe(1)
+    expect(spots[0]).toMatchObject({ openerPos: 'LJ', threeBettorPos: 'BU', tag: 'ip', action: 'call' })
+  })
+
+  test('vs3betSpots: LJ opens, SB 3-bets (OOP), LJ folds', () => {
+    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['fold', 4], ['raise', 5, 12], ['fold', 6], ['fold', 1]])
+    const spots = vs3betSpots(h)
+    expect(spots[0]).toMatchObject({ openerPos: 'LJ', threeBettorPos: 'SB', tag: 'oop', action: 'fold' })
+  })
+
+  test('vs3betSpots: SB opens, BB 3-bets → tag bb', () => {
+    const h = mk6([['fold', 1], ['fold', 2], ['fold', 3], ['fold', 4], ['raise', 5, 3.5], ['raise', 6, 12], ['raise', 5, 30]])
+    const spots = vs3betSpots(h)
+    expect(spots[0]).toMatchObject({ openerPos: 'SB', threeBettorPos: 'BB', tag: 'bb', action: 'raise' })
+  })
+
+  test('vs3betSpots: a flat before the 3-bet (squeeze pot) is excluded', () => {
+    const h = mk6([['raise', 1, 3.5], ['call', 3, 3.5], ['raise', 4, 14], ['fold', 5], ['fold', 6], ['fold', 1], ['fold', 3]])
+    expect(vs3betSpots(h).length).toBe(0)
+  })
+
+  test('vs3betSpots: a cold-call of the 3-bet (3rd seat in) is excluded', () => {
+    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 12], ['call', 5, 12], ['fold', 6], ['fold', 1]])
+    expect(vs3betSpots(h).length).toBe(0)
+  })
+
+  test('vs3betSpots: a sub-10bb 3-bet is excluded', () => {
+    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 8], ['fold', 5], ['fold', 6], ['fold', 1]])
+    expect(vs3betSpots(h).length).toBe(0)
+  })
+
+  test('vs3betReport requires BOTH opener & 3-bettor 75bb+', () => {
+    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 12], ['fold', 5], ['fold', 6], ['call', 1, 8.5]], { 4: 50 })
+    expect(vs3betReport([h], { opener: 'LJ', tag: 'ip', minBB: 75, subject: 'population' }).total).toBe(0)
+    expect(vs3betReport([h], { opener: 'LJ', tag: 'ip', minBB: 40, subject: 'population' }).counts.call).toBe(1)
+  })
+
+  // ---- limp vs iso ----
+  test('limpVsIsoSpots: HU limp, CO isos (IP), limper calls', () => {
+    const h = mk6([['call', 1, 1], ['fold', 2], ['raise', 3, 5], ['fold', 4], ['fold', 5], ['fold', 6], ['call', 1, 4]])
+    const spots = limpVsIsoSpots(h)
+    expect(spots.length).toBe(1)
+    expect(spots[0]).toMatchObject({ limperPos: 'LJ', isoPos: 'CO', tag: 'ip', multiway: false, action: 'call' })
+  })
+
+  test('limpVsIsoSpots: limp then SB isos (OOP)', () => {
+    const h = mk6([['call', 1, 1], ['fold', 2], ['fold', 3], ['fold', 4], ['raise', 5, 5], ['fold', 6], ['fold', 1]])
+    expect(limpVsIsoSpots(h)[0]).toMatchObject({ limperPos: 'LJ', isoPos: 'SB', tag: 'oop', action: 'fold' })
+  })
+
+  test('limpVsIsoSpots: an SB complete is not a tracked limp (LJ–BU only)', () => {
+    const h = mk6([['fold', 1], ['fold', 2], ['fold', 3], ['fold', 4], ['call', 5, 0.5], ['raise', 6, 5], ['call', 5, 4]])
+    expect(limpVsIsoSpots(h).length).toBe(0)
+  })
+
+  test('limpVsIsoSpots: two limpers then iso = multiway; only the first limper tracked', () => {
+    const h = mk6([['call', 1, 1], ['call', 2, 1], ['raise', 4, 6], ['fold', 5], ['fold', 6], ['raise', 1, 18], ['fold', 2]])
+    const spots = limpVsIsoSpots(h)
+    expect(spots.length).toBe(1)
+    expect(spots[0]).toMatchObject({ limperPos: 'LJ', multiway: true, tag: 'ip', action: 'raise' })
+  })
+
+  test('limpVsIsoSpots: a re-raise before the limper acts is excluded', () => {
+    // LJ limps, CO isos, BU re-raises (4-bet) before it returns to LJ → different node
+    const h = mk6([['call', 1, 1], ['fold', 2], ['raise', 3, 5], ['raise', 4, 16], ['fold', 5], ['fold', 6], ['fold', 1]])
+    expect(limpVsIsoSpots(h).length).toBe(0)
+  })
+
+  test('limpVsIsoSpots: a pure RFI (no limp in front) is not an iso', () => {
+    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['fold', 4], ['fold', 5], ['fold', 6]])
+    expect(limpVsIsoSpots(h).length).toBe(0)
+  })
+
+  test('limpVsIsoReport: multiway filter + 75bb stack gate', () => {
+    const hu = mk6([['call', 1, 1], ['fold', 2], ['raise', 3, 5], ['fold', 4], ['fold', 5], ['fold', 6], ['call', 1, 4]])
+    const multi = mk6([['call', 1, 1], ['call', 2, 1], ['raise', 4, 6], ['fold', 5], ['fold', 6], ['fold', 1], ['fold', 2]])
+    const hands = [hu, multi]
+    expect(limpVsIsoReport(hands, { iso: 'ip', multiway: 'all', minBB: 75, subject: 'population' }).total).toBe(2)
+    expect(limpVsIsoReport(hands, { iso: 'ip', multiway: 'hu', minBB: 75, subject: 'population' }).total).toBe(1)
+    expect(limpVsIsoReport(hands, { iso: 'ip', multiway: 'multi', minBB: 75, subject: 'population' }).total).toBe(1)
+    // short iso-raiser excludes the spot at 75bb+
+    const short = mk6([['call', 1, 1], ['fold', 2], ['raise', 3, 5], ['fold', 4], ['fold', 5], ['fold', 6], ['call', 1, 4]], { 3: 40 })
+    expect(limpVsIsoReport([short], { iso: 'ip', multiway: 'all', minBB: 75, subject: 'population' }).total).toBe(0)
+  })
 })
 
 describe('ploCombo – dealt hand → solver combo key', () => {
@@ -713,6 +820,27 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(straightPossibleFlop(C('Ts 9h 5d'))).toBe(false)  // span 5 — only draws, no made straight
   })
 
+  test('board texture across turn/river (4- and 5-card boards)', () => {
+    // turn brings a straight that the flop didn't allow: Q63 + 5 → 3-5-6 spans 3
+    expect(straightPossibleBoard(C('Qs 6h 3d'))).toBe(false)
+    expect(straightPossibleBoard(C('Qs 6h 3d 5c'))).toBe(true)
+    // a brick turn keeps a dry flop dry
+    expect(straightPossibleBoard(C('Ks 7h 2d Qc'))).toBe(false)
+    // 5-card board: any 3 within a 5-window completes it
+    expect(straightPossibleBoard(C('Ks 7h 2d Qc 4s'))).toBe(false) // K,Q isolated; 7,4,2 too spread
+    expect(straightPossibleBoard(C('Ks 7h 2d Qc Js'))).toBe(true)  // J-Q-K
+    // paired detection scales with the board
+    expect(boardPaired(C('Ah Kd 2c'))).toBe(false)
+    expect(boardPaired(C('Ah Kd 2c Ks'))).toBe(true)              // turn pairs the K
+    expect(boardPaired(C('Ah Kd 2c 7s 9h'))).toBe(false)
+    // suit texture by distinct-suit count, scaling with the board
+    expect(boardSuits(C('As Ks Qs'))).toBe('mono')
+    expect(boardSuits(C('As Ks Qs 2s'))).toBe('mono')
+    expect(boardSuits(C('As Ks Qs 2h'))).toBe('twotone')
+    expect(boardSuits(C('As Kh Qd'))).toBe('rainbow')
+  })
+
+
   test('extractFlopSpot: SRP HU, OOP = first to act, normalized actions', () => {
     const h = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3)])
     const s = extractFlopSpot(h)!
@@ -736,14 +864,14 @@ describe('postflop – BB vs flop c-bet spot', () => {
     const faced = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('call', 3, 'flop', 3)])
     const back = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('check', 1, 'flop')])
     const xr = hand('Ks 7h 2d', [A('check', 3, 'flop'), A('bet', 1, 'flop', 3), A('raise', 3, 'flop', 12), A('fold', 1, 'flop')])
-    const r = formationReport(extractSpots([faced, back, xr]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([faced, back, xr]), 'srp-bb-vs-ip', 'flop-xb', 'hero', EMPTY_FILTER)
 
     expect(r.heroNode.total).toBe(2)            // faced (call) + xr (raise) reach the node; back does not
     expect(r.prior!.total).toBe(3)              // all three checked to the IP raiser
     expect(r.responses[0].total).toBe(1)        // only xr reaches "vs your check-raise"
     expect(r.listSpots.length).toBe(2)
     // texture filter (rainbow board) excludes monotone
-    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { suits: 'mono', paired: 'any', straight: 'any' }).heroNode.total).toBe(0)
+    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { ...EMPTY_FILTER, suits: 'mono' }).heroNode.total).toBe(0)
   })
 
   test('formationReport: 3BP OOP first-to-act with villain response nodes', () => {
@@ -768,7 +896,7 @@ describe('postflop – BB vs flop c-bet spot', () => {
     const s = extractFlopSpot(h3bet)!
     expect(s.potType).toBe('3BP')
     expect(s.oopPos).toBe('BB')
-    const r = formationReport(extractSpots([h3bet]), '3bp-oop', 'flop-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h3bet]), '3bp-oop', 'flop-initial', 'hero', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)                 // hero acts first (bet)
     expect(r.prior).toBeUndefined()
     expect(r.responses.find(n => n.label.includes('vs your bet'))!.total).toBe(1) // villain faced the bet
@@ -800,9 +928,14 @@ describe('postflop – BB vs flop c-bet spot', () => {
     const s = extractFlopSpot(h)!
     expect(s.turnCard).toEqual(C('Qs')[0])
     expect(s.turnActions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:call'])
+    // board texture: flop Ks7h2d (dry), turn Qs keeps it dry & unpaired
+    expect(s.flopRanks).toEqual(['K', '7', '2'])
+    expect(s.straighty).toBe(false)
+    expect(s.turnStraighty).toBe(false)
+    expect(s.turnPaired).toBe(false)
 
     // hero (BB/OOP) facing the turn bet on the X-B-C line
-    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xb', 'hero', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)
     expect(r.heroNode.actionCounts.call).toBe(1)
     expect(r.prior!.total).toBe(1)              // villain's turn bet (the prior decision)
@@ -823,11 +956,11 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(s.actions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:raise', 'ip:call'])
 
     // IP (BU, not hero) facing the check-raise → population mode
-    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'flop-xbr', 'population', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'flop-xbr', 'population', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)
     expect(r.heroNode.actionCounts.call).toBe(1)
     // the X-B-R-C closing line reaches a turn node (OOP first to act = hero here)
-    const turn = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbrc-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const turn = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbrc-initial', 'hero', EMPTY_FILTER)
     expect(turn.heroNode.total).toBe(1)
   })
 
@@ -860,7 +993,7 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(s.riverActions.map(a => `${a.actor}:${a.type}`)).toEqual(['oop:check', 'ip:bet', 'oop:call'])
 
     // hero (BB/OOP) facing the river bet on the X-B-C / X-B-C line
-    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xbc-xb', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h]), 'srp-bb-vs-ip', 'xbc-xbc-xb', 'hero', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)
     expect(r.heroNode.actionCounts.call).toBe(1)
     expect(r.prior!.total).toBe(1)              // villain's river bet
@@ -933,7 +1066,7 @@ describe('postflop – BB vs flop c-bet spot', () => {
         A('bet', 5, 'flop', 3), A('call', 1, 'flop', 3)])
     const s = extractFlopSpot(h)!
     expect(s.oopPos).toBe('HJ'); expect(s.ipPos).toBe('BU'); expect(s.ipIsHero).toBe(true)
-    const r = formationReport(extractSpots([h]), 'srp-coldcall', 'flop-b', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h]), 'srp-coldcall', 'flop-b', 'hero', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)              // hero (IP) faced the c-bet
     expect(r.prior!.total).toBe(1)                // the OOP c-bet decision
     expect(r.listSpots[0].cards).toEqual(C('Ah Kd Qc Jh')) // hero's (BU) cards
@@ -952,7 +1085,7 @@ describe('postflop – BB vs flop c-bet spot', () => {
         A('bet', 4, 'flop', 6), A('call', 6, 'flop', 6)])
     const s = extractFlopSpot(h)!
     expect(s.potType).toBe('3BP'); expect(s.oopPos).toBe('LJ'); expect(s.ipPos).toBe('CO')
-    const r = formationReport(extractSpots([h]), '3bp-ip', 'flop-initial', 'hero', { suits: 'any', paired: 'any', straight: 'any' })
+    const r = formationReport(extractSpots([h]), '3bp-ip', 'flop-initial', 'hero', EMPTY_FILTER)
     expect(r.heroNode.total).toBe(1)
     expect(r.responses.find(n => n.label.includes('vs your bet'))!.total).toBe(1)
   })
