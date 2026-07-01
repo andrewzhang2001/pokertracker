@@ -8,6 +8,7 @@ import {
 } from '../lib/reports'
 import type { TableKind } from '../lib/positionUtils'
 import { KindToggle } from './KindToggle'
+import { MonthRange } from './MonthRange'
 import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
 
@@ -90,10 +91,13 @@ const LEGEND_EV = { axes: { tight: 1, loose: 1, passive: 1, aggressive: 1 }, agg
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ grid, kind, onKind, onOpen, onBack, subject = 'population', title = 'Reports' }: {
+export function ReportsMenu({ grid, kind, onKind, monthFrom, monthTo, onMonths, onOpen, onBack, subject = 'population', title = 'Reports' }: {
   grid: ReportGridRow[]
   kind: TableKind
   onKind: (k: TableKind) => void
+  monthFrom: string
+  monthTo: string
+  onMonths: (from: string, to: string) => void
   onOpen: (sel: ReportSel) => void
   onBack: () => void
   subject?: Subject
@@ -173,6 +177,7 @@ export function ReportsMenu({ grid, kind, onKind, onOpen, onBack, subject = 'pop
         </button>
         <h1 className="text-2xl font-bold text-white">{title}</h1>
         <KindToggle kind={kind} onChange={onKind} />
+        <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>
         <span className="ml-auto text-xs text-gray-600">
           ratio = <span className="text-red-400">raise</span>/<span className="text-green-400">call</span>/<span className="text-blue-400">fold</span>

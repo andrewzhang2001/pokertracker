@@ -735,6 +735,54 @@ describe('ploEval – flop hand classification', () => {
     expect(made('8h 8c 4d 2s', 'Kc 9s 5h')).toBe('pocket pair') // underpair
   })
 
+  test('paired/tripped board texture is shared — not counted toward the category', () => {
+    // J33: the board 33 is everyone's, so don't inflate to "two pair" —
+    expect(made('Jh Ah Td 9s', 'Jc 3d 3s')).toBe('top pair')    // JAT9 → top pair
+    expect(made('9h 9c 4d 2s', 'Jc 3d 3s')).toBe('pocket pair') // 99xx → pocket pair
+    expect(made('Ah Ac 4d 2s', 'Jc 3d 3s')).toBe('overpair')    // AA   → overpair
+    expect(made('Ah Ac 4d 5s', 'Qc 9d 9s')).toBe('overpair')    // AA45 on Q99 → overpair
+    // pocket pair can't also use the board pair (only 2 hole cards in PLO)
+    expect(made('Kh Kc 6d 5s', '6c 2d 2h')).toBe('overpair')    // KK65 on 622 → overpair
+    expect(made('Ah Ac 7d 7s', 'Tc Td 2h')).toBe('overpair')    // AA77 on TT2 → overpair
+    // a genuine two pair (player pairs both ranks) still counts (turn board J733)
+    expect(classifyBoard(C('Jh 7c 4d 2s'), C('Js 7h 3c 3d')).made).toBe('two pair')
+    // board trips are shared too: A-J on J666 → top pair, not board trips
+    expect(classifyBoard(C('Ah Jc 4d 2s'), C('Jh 6c 6d 6s')).made).toBe('top pair')
+    // but a real full house on the trips board is kept
+    expect(classifyBoard(C('9h 9c 4d 2s'), C('Jh 6c 6d 6s')).made).toBe('full house')
+    // trips made WITH a hole card on a paired board stays trips (K on KK5)
+    expect(made('Kh 4c 7d 8s', 'Ks Kd 5h')).toBe('trips')
+  })
+
+  test('subcategories (nut tiers + draw tag)', () => {
+    const sub = (hole: string, board: string) => classifyBoard(C(hole), C(board)).sub
+    const tier = (hole: string, board: string) => sub(hole, board).split(' · ')[0] // ignore any draw tag
+    // flush tiers (board = 3 hearts, A not on board so nut = A)
+    expect(tier('Ah Kh 4d 2s', 'Qh 9h 3h')).toBe('nut flush')
+    expect(tier('Kh Jh 4d 2s', 'Qh 9h 3h')).toBe('second nut flush')
+    expect(tier('Jh Th 4d 2s', 'Qh 9h 3h')).toBe('other flush')
+    // sets
+    expect(tier('Kh Ks 2d 3s', 'Kd 9c 4h')).toBe('top set')
+    expect(tier('9h 9s 2d 3s', 'Kd 9c 4h')).toBe('middle set')
+    expect(tier('4d 4s 2c 3s', 'Kd 9c 4h')).toBe('bottom set')
+    // trips: nut = best kicker given the board (A shared on A66)
+    expect(tier('Ah 6h 4d 2s', '6c 6d Js')).toBe('nut trips')
+    expect(tier('Kh 6h 4d 2s', 'Ac 6d 6s')).toBe('nut trips')
+    expect(tier('Qh 6h 4d 2s', 'Ac 6d 6s')).toBe('non-nut trips')
+    // two pair tiers on AQ65
+    expect(tier('Ah Qc 4d 2s', 'As Qd 6c 5h')).toBe('top two pair')
+    expect(tier('Ah 6d 4d 2s', 'As Qd 6c 5h')).toBe('two pair w/ TP')
+    expect(tier('6d 5s 4d 2s', 'As Qd 6c 5h')).toBe('other two pair')
+    // combined made + draw
+    expect(sub('Kh Ks 2h 3d', 'Kd 9h 4h')).toBe('top set · flush draw')
+    // pure draw bucket
+    expect(sub('Ah Th 4d 2s', 'Kh 9h 3c')).toBe('nut flush draw')
+    expect(sub('Qh Th 4d 2s', 'Kh 9h 3c')).toBe('other flush draw')
+    expect(sub('Jc Tc 7s 6d', '9h 8d 2c')).toBe('wrap')
+    expect(sub('Jh Tc 4d 6s', '9h 8d 2c')).toBe('OESD')
+    expect(sub('Qh Jc 4s 6d', 'Kh 9d 2c')).toBe('gutshot')
+  })
+
   test('draws + combos', () => {
     expect(cls('Ah 2h 5c 7d', 'Kh 9h 3c')).toMatchObject({ made: null, draws: ['flush draw'] })
     expect(cls('Jh Tc 4d 6s', '9h 8d 2c').draws).toContain('OESD')

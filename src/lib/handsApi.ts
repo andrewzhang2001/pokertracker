@@ -62,10 +62,19 @@ export async function exportHandsToDb(
   return { done: total, total, added, duplicate, failed }
 }
 
+// Optional month-range filter (epoch ms; `to` is exclusive). Null = unbounded.
+export interface DateRange { from: number | null; to: number | null }
+const withRange = (p: URLSearchParams, r?: DateRange) => {
+  if (r?.from != null) p.set('from', String(r.from))
+  if (r?.to != null) p.set('to', String(r.to))
+  return p
+}
+
 // The compact per-combo report grid (one GROUP BY over preflop_spots). Drives
 // every report tile without shipping the hand pool to the browser.
-export async function fetchReportGrid(): Promise<ReportGridRow[]> {
-  const res = await fetch('/api/hands?view=reports', { headers: await authHeaders() })
+export async function fetchReportGrid(range?: DateRange): Promise<ReportGridRow[]> {
+  const p = withRange(new URLSearchParams({ view: 'reports' }), range)
+  const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load reports')
   const data = await res.json() as { grid?: ReportGridRow[] }
   return data.grid ?? []
@@ -73,8 +82,8 @@ export async function fetchReportGrid(): Promise<ReportGridRow[]> {
 
 // Hands for ONE report's drill-down — only those with a qualifying spot, so the
 // detail view can re-derive populated bucket lists with buildReport cheaply.
-export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind): Promise<{ hands: ParsedHand[]; notes: string[] }> {
-  const p = new URLSearchParams({ view: 'report-hands', subject, kind })
+export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const p = withRange(new URLSearchParams({ view: 'report-hands', subject, kind }), range)
   if (sel.type === 'rfi') { p.set('type', 'rfi'); p.set('pos_a', sel.pos) }
   else if (sel.type === 'vsrfi') { p.set('type', 'vsrfi'); p.set('pos_a', sel.defender); p.set('pos_b', sel.opener) }
   else if (sel.type === 'vs3bet') { p.set('type', 'vs3bet'); p.set('pos_a', sel.opener); p.set('pos_b', sel.tag) }
@@ -91,16 +100,17 @@ export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'popula
 // One formation's slim postflop spots — the browser runs the node-walk over
 // these (board texture / line / node / mode all stay client-side). `hand` is
 // omitted; drill-down resolves it via fetchHandsByIds.
-export async function fetchFlopSpots(formationId: string): Promise<FlopSpot[]> {
-  const res = await fetch(`/api/hands?view=flop-spots&formation=${encodeURIComponent(formationId)}`, { headers: await authHeaders() })
+export async function fetchFlopSpots(formationId: string, range?: DateRange): Promise<FlopSpot[]> {
+  const p = withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId }), range)
+  const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load spots')
   const data = await res.json() as { spots?: FlopSpot[] }
   return data.spots ?? []
 }
 
 // Per-formation sample counts under the active board filter (postflop menu tiles).
-export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter): Promise<Record<string, number>> {
-  const q = new URLSearchParams({ view: 'flop-counts', mode })
+export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange): Promise<Record<string, number>> {
+  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode }), range)
   writeFilter(q, filter)
   const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load counts')

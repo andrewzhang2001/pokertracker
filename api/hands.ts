@@ -125,16 +125,22 @@ async function handler(req: Request): Promise<Response> {
     if (req.method === 'GET') {
       const params = new URL(req.url).searchParams
       const view = params.get('view')
+      // Optional month-range filter (epoch ms; `to` is exclusive = start of the
+      // month after the selected end month). Null bound → unbounded on that side.
+      const dFrom = params.get('from')
+      const dTo = params.get('to')
       // Compact per-combo grid for every preflop report — one GROUP BY drives all
       // the report tiles. `hero` = the viewer's own spots; `pop` = the field's.
       if (view === 'reports') {
         const grid = await sql`
-          SELECT table_kind, report_type, pos_a, pos_b, multiway, combo, action,
-            sum(CASE WHEN is_hero AND owner_id = ${ownerId} THEN 1 ELSE 0 END)::int AS hero,
-            sum(CASE WHEN NOT is_hero THEN 1 ELSE 0 END)::int AS pop
-          FROM preflop_spots
-          WHERE stack_bb >= 75 AND key_stack_bb >= 75
-          GROUP BY table_kind, report_type, pos_a, pos_b, multiway, combo, action
+          SELECT s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action,
+            sum(CASE WHEN s.is_hero AND s.owner_id = ${ownerId} THEN 1 ELSE 0 END)::int AS hero,
+            sum(CASE WHEN NOT s.is_hero THEN 1 ELSE 0 END)::int AS pop
+          FROM preflop_spots s JOIN hands h ON h.id = s.hand_id
+          WHERE s.stack_bb >= 75 AND s.key_stack_bb >= 75
+            AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
+            AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
+          GROUP BY s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action
         `
         return Response.json({ grid })
       }
@@ -158,6 +164,8 @@ async function handler(req: Request): Promise<Response> {
                         THEN s.is_hero AND s.owner_id = ${ownerId}
                         ELSE NOT s.is_hero END)
           )
+            AND (${dFrom}::bigint IS NULL OR played_at >= ${dFrom}::bigint)
+            AND (${dTo}::bigint IS NULL OR played_at < ${dTo}::bigint)
           ORDER BY played_at DESC NULLS LAST, created_at DESC
         `
         return Response.json({ hands: rows })
@@ -166,7 +174,12 @@ async function handler(req: Request): Promise<Response> {
       // this subset (board texture / line / node / mode are all client-side).
       if (view === 'flop-spots') {
         const formation = params.get('formation')
-        const rows = await sql`SELECT spot FROM flop_spots WHERE formation_id = ${formation}` as { spot: unknown }[]
+        const rows = await sql`
+          SELECT s.spot FROM flop_spots s JOIN hands h ON h.id = s.hand_id
+          WHERE s.formation_id = ${formation}
+            AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
+            AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
+        ` as { spot: unknown }[]
         return Response.json({ spots: rows.map(r => r.spot) })
       }
       // Per-formation sample counts under the active board filter — the menu's
@@ -179,22 +192,24 @@ async function handler(req: Request): Promise<Response> {
         const ranks = (k: string) => { const v = params.get(k); return v ? v.split(',') : null }
         const heroMode = params.get('mode') === 'hero'
         const rows = await sql`
-          SELECT formation_id, count(*)::int AS total
-          FROM flop_spots
-          WHERE (${heroMode}::boolean = false OR (owner_id = ${ownerId} AND (oop_is_hero OR ip_is_hero)))
-            AND (${su('suits')}::text   IS NULL OR flop_suits      = ${su('suits')})
-            AND (${yn('paired')}::boolean IS NULL OR flop_paired   = ${yn('paired')})
-            AND (${yn('straight')}::boolean IS NULL OR flop_straighty = ${yn('straight')})
-            AND (${su('tsuits')}::text  IS NULL OR turn_suits      = ${su('tsuits')})
-            AND (${yn('tpaired')}::boolean IS NULL OR turn_paired  = ${yn('tpaired')})
-            AND (${yn('tstraight')}::boolean IS NULL OR turn_straighty = ${yn('tstraight')})
-            AND (${su('rsuits')}::text  IS NULL OR river_suits     = ${su('rsuits')})
-            AND (${yn('rpaired')}::boolean IS NULL OR river_paired = ${yn('rpaired')})
-            AND (${yn('rstraight')}::boolean IS NULL OR river_straighty = ${yn('rstraight')})
-            AND (${ranks('fh')}::text[] IS NULL OR flop_high = ANY(${ranks('fh')}))
-            AND (${ranks('fm')}::text[] IS NULL OR flop_mid  = ANY(${ranks('fm')}))
-            AND (${ranks('fc')}::text[] IS NULL OR flop_low  = ANY(${ranks('fc')}))
-          GROUP BY formation_id
+          SELECT s.formation_id, count(*)::int AS total
+          FROM flop_spots s JOIN hands h ON h.id = s.hand_id
+          WHERE (${heroMode}::boolean = false OR (s.owner_id = ${ownerId} AND (s.oop_is_hero OR s.ip_is_hero)))
+            AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
+            AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
+            AND (${su('suits')}::text   IS NULL OR s.flop_suits      = ${su('suits')})
+            AND (${yn('paired')}::boolean IS NULL OR s.flop_paired   = ${yn('paired')})
+            AND (${yn('straight')}::boolean IS NULL OR s.flop_straighty = ${yn('straight')})
+            AND (${su('tsuits')}::text  IS NULL OR s.turn_suits      = ${su('tsuits')})
+            AND (${yn('tpaired')}::boolean IS NULL OR s.turn_paired  = ${yn('tpaired')})
+            AND (${yn('tstraight')}::boolean IS NULL OR s.turn_straighty = ${yn('tstraight')})
+            AND (${su('rsuits')}::text  IS NULL OR s.river_suits     = ${su('rsuits')})
+            AND (${yn('rpaired')}::boolean IS NULL OR s.river_paired = ${yn('rpaired')})
+            AND (${yn('rstraight')}::boolean IS NULL OR s.river_straighty = ${yn('rstraight')})
+            AND (${ranks('fh')}::text[] IS NULL OR s.flop_high = ANY(${ranks('fh')}))
+            AND (${ranks('fm')}::text[] IS NULL OR s.flop_mid  = ANY(${ranks('fm')}))
+            AND (${ranks('fc')}::text[] IS NULL OR s.flop_low  = ANY(${ranks('fc')}))
+          GROUP BY s.formation_id
         `
         return Response.json({ counts: rows })
       }

@@ -418,11 +418,24 @@ export const getNode = (id: string) => NODE_BY_ID.get(id)
 const otherSeat = (a: FlopActor): FlopActor => (a === 'oop' ? 'ip' : 'oop')
 
 // ---- node breakdown ----
+// Bet-size buckets by % of pot for the aggressive actions, so the detail bars can
+// shade a bet/raise by sizing: [ <40%, 40–70%, >70% ]. Keyed by action ('bet'/'raise').
+export type SizeBuckets = Record<string, [number, number, number]>
+const sizeBucket = (pct: number) => (pct < 0.4 ? 0 : pct <= 0.7 ? 1 : 2)
+function addSize(sizes: SizeBuckets, action: string, betPct: number | undefined) {
+  if ((action === 'bet' || action === 'raise') && betPct !== undefined) {
+    const arr = sizes[action] ?? [0, 0, 0]
+    arr[sizeBucket(betPct)]++
+    sizes[action] = arr
+  }
+}
+
 export interface ClassRow {
   key: string
   counts: Record<string, number>
+  sizes: SizeBuckets
   total: number
-  sub: { label: string; counts: Record<string, number>; total: number }[]
+  sub: { label: string; counts: Record<string, number>; sizes: SizeBuckets; total: number }[]
 }
 export interface NodeResult {
   label: string
@@ -475,27 +488,31 @@ function reaches(s: FlopSpot, node: NodeDef): boolean {
 function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
   const reaching = spots.filter(s => reaches(s, node))
   const di = decisionIndex(node)
-  const getOutcome = (s: FlopSpot) => streamOf(s, node)[di].type
 
+  type Agg = { counts: Record<string, number>; sizes: SizeBuckets }
+  const newAgg = (): Agg => ({ counts: {}, sizes: {} })
   const actionCounts: Record<string, number> = {}
-  const top = new Map<string, { counts: Record<string, number>; subs: Map<string, Record<string, number>> }>()
+  const top = new Map<string, Agg & { subs: Map<string, Agg> }>()
   for (const s of reaching) {
-    const oc = getOutcome(s)
+    const act = streamOf(s, node)[di]
+    const oc = act.type
     actionCounts[oc] = (actionCounts[oc] || 0) + 1
     const hc = classOf(s, node)
     if (!hc) continue
     const key = hc.made ?? (hc.draws.length ? 'draw' : 'air')
-    const t = top.get(key) ?? { counts: {} as Record<string, number>, subs: new Map<string, Record<string, number>>() }
+    const t = top.get(key) ?? { ...newAgg(), subs: new Map<string, Agg>() }
     t.counts[oc] = (t.counts[oc] || 0) + 1
-    const su = t.subs.get(hc.label) ?? ({} as Record<string, number>)
-    su[oc] = (su[oc] || 0) + 1
-    t.subs.set(hc.label, su)
+    addSize(t.sizes, oc, act.betPct)
+    const su = t.subs.get(hc.sub) ?? newAgg()
+    su.counts[oc] = (su.counts[oc] || 0) + 1
+    addSize(su.sizes, oc, act.betPct)
+    t.subs.set(hc.sub, su)
     top.set(key, t)
   }
   const rows = CLASS_ORDER.filter(k => top.has(k)).map(k => {
     const t = top.get(k)!
-    const sub = [...t.subs.entries()].map(([label, counts]) => ({ label, counts, total: sum(counts) })).sort((a, b) => b.total - a.total)
-    return { key: k, counts: t.counts, total: sum(t.counts), sub }
+    const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => b.total - a.total)
+    return { key: k, counts: t.counts, sizes: t.sizes, total: sum(t.counts), sub }
   })
   return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, handIds: reaching.map(s => s.handId) }
 }

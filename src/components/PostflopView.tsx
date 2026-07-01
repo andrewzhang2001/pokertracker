@@ -2,9 +2,11 @@ import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
   formationReport, FORMATIONS, getNode, nodeLabel, parseFilter, writeFilter,
-  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets,
 } from '../lib/postflop'
+import type { HandClass } from '../lib/ploEval'
 import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
+import { monthRange } from './MonthRange'
 import PlayingCard from './PlayingCard'
 import PostflopFilters from './PostflopFilters'
 
@@ -22,6 +24,8 @@ function readState() {
 interface Props {
   formationId: string
   nodeId: string
+  monthFrom: string
+  monthTo: string
   onOpenHands: (hands: ParsedHand[], index: number) => void
   onBack: () => void
 }
@@ -42,28 +46,51 @@ function segmentsOf(rows: ClassRow[]) {
   return ACTION_ORDER.filter(k => keys.has(k)).map(k => ({ key: k, color: ACTION_COLOR[k] }))
 }
 
-function StackedBar({ counts, segments }: { counts: Record<string, number>; segments: { key: string; color: string }[] }) {
+// Bet/raise segments are shaded by size (% of pot): <40% yellow, 40–70% orange,
+// >70% red — so bet-sizing trends by hand class are visible at a glance.
+const SIZE_COLORS = ['bg-yellow-500/80', 'bg-orange-500/80', 'bg-red-500/75']
+
+function StackedBar({ counts, sizes, segments }: { counts: Record<string, number>; sizes?: SizeBuckets; segments: { key: string; color: string }[] }) {
   const total = segments.reduce((a, s) => a + (counts[s.key] || 0), 0)
   if (!total) return <div className="flex-1 h-4 rounded bg-gray-800" />
-  const label = segments.filter(s => (counts[s.key] || 0) > 0).map(s => Math.round((counts[s.key] || 0) / total * 100)).join('/')
+  // Segment WIDTHS are proportional (the visual mix); the label is RAW COUNTS.
+  const label = segments.filter(s => (counts[s.key] || 0) > 0).map(s => counts[s.key] || 0).join('/')
   return (
-    <div className="flex-1 h-4 rounded overflow-hidden flex relative" title={segments.map(s => `${s.key} ${Math.round((counts[s.key] || 0) / total * 100)}%`).join(' · ')}>
-      {segments.map(s => { const w = (counts[s.key] || 0) / total * 100; return w > 0 ? <div key={s.key} className={s.color} style={{ width: `${w}%` }} /> : null })}
+    <div className="flex-1 h-4 rounded overflow-hidden flex relative" title={segments.map(s => `${s.key} ${counts[s.key] || 0} (${Math.round((counts[s.key] || 0) / total * 100)}%)`).join(' · ')}>
+      {segments.map(s => {
+        const c = counts[s.key] || 0
+        if (c <= 0) return null
+        const sz = sizes?.[s.key]
+        if (sz && (s.key === 'bet' || s.key === 'raise')) {
+          // split the aggressive segment into <40 / 40–70 / >70 size buckets
+          const parts = sz.map((n, i) => n > 0 ? <div key={`${s.key}-${i}`} className={SIZE_COLORS[i]} style={{ width: `${(n / total) * 100}%` }} /> : null)
+          const rest = c - (sz[0] + sz[1] + sz[2]) // bets missing a size (rare) keep the default color
+          if (rest > 0) parts.push(<div key={`${s.key}-rest`} className={s.color} style={{ width: `${(rest / total) * 100}%` }} />)
+          return parts
+        }
+        return <div key={s.key} className={s.color} style={{ width: `${(c / total) * 100}%` }} />
+      })}
       <span className="absolute inset-0 flex items-center justify-center text-[10px] text-white/90">{label}</span>
     </div>
   )
 }
 
-function NodeChart({ node, onView }: { node: NodeResult; onView?: () => void }) {
+export type Sel = { made: string; sub?: string }
+
+function NodeChart({ node, onView, selected, onSelect }: {
+  node: NodeResult; onView?: () => void; selected?: Sel | null; onSelect?: (s: Sel) => void
+}) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (k: string) => setOpen(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
   const segs = segmentsOf(node.rows)
+  const rowSel = (k: string) => !!selected && selected.made === k && !selected.sub
+  const subSel = (k: string, sub: string) => !!selected && selected.made === k && selected.sub === sub
   return (
     <div className="mb-4">
       <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 flex justify-between items-baseline">
         <span>{node.label}</span>
-        <span className="text-gray-600 normal-case">
-          {segs.map((s, i) => <span key={s.key}>{i > 0 && ' '}<span className={actionText(s.key)}>{s.key}</span></span>)} · {node.total}
+        <span className="text-gray-600 normal-case" title={segs.map(s => `${s.key} ${node.actionCounts[s.key] || 0}`).join(' · ')}>
+          {segs.map((s, i) => <span key={s.key}>{i > 0 && <span className="text-gray-600">/</span>}<span className={actionText(s.key)}>{node.actionCounts[s.key] || 0}</span></span>)} <span className="text-gray-600">· {node.total}</span>
         </span>
       </div>
       {node.rows.length === 0 ? <p className="text-gray-600 text-xs">no sample</p> : (
@@ -73,20 +100,28 @@ function NodeChart({ node, onView }: { node: NodeResult; onView?: () => void }) 
             const isOpen = open.has(row.key)
             return (
               <div key={row.key}>
-                <button onClick={() => expandable && toggle(row.key)}
-                  className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 ${expandable ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'}`}>
+                <button onClick={() => { if (expandable) toggle(row.key); onSelect?.({ made: row.key }) }}
+                  className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 ${onSelect || expandable ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'} ${rowSel(row.key) ? 'bg-yellow-500/15 ring-1 ring-yellow-500/40' : ''}`}>
                   <span className="w-3 text-gray-500">{expandable ? (isOpen ? '▾' : '▸') : ''}</span>
                   <span className="w-24 text-gray-300 text-left truncate">{row.key}</span>
-                  <StackedBar counts={row.counts} segments={segs} />
+                  <StackedBar counts={row.counts} sizes={row.sizes} segments={segs} />
                   <span className="w-8 text-right text-gray-500">{row.total}</span>
                 </button>
-                {isOpen && row.sub.map(s => (
-                  <div key={s.label} className="flex items-center gap-2 text-xs pl-4">
-                    <span className="w-3" /><span className="w-24 text-gray-500 text-left truncate" title={s.label}>{s.label}</span>
-                    <StackedBar counts={s.counts} segments={segs} />
-                    <span className="w-8 text-right text-gray-600">{s.total}</span>
-                  </div>
-                ))}
+                {isOpen && row.sub.map(s => {
+                  const inner = (
+                    <>
+                      <span className="w-3" /><span className="w-24 text-gray-500 text-left truncate" title={s.label}>{s.label}</span>
+                      <StackedBar counts={s.counts} sizes={s.sizes} segments={segs} />
+                      <span className="w-8 text-right text-gray-600">{s.total}</span>
+                    </>
+                  )
+                  return onSelect ? (
+                    <button key={s.label} onClick={() => onSelect({ made: row.key, sub: s.label })}
+                      className={`w-full flex items-center gap-2 text-xs pl-4 rounded hover:bg-white/5 ${subSel(row.key, s.label) ? 'bg-yellow-500/15 ring-1 ring-yellow-500/40' : ''}`}>{inner}</button>
+                  ) : (
+                    <div key={s.label} className="flex items-center gap-2 text-xs pl-4">{inner}</div>
+                  )
+                })}
               </div>
             )
           })}
@@ -101,7 +136,7 @@ function NodeChart({ node, onView }: { node: NodeResult; onView?: () => void }) 
   )
 }
 
-export default function PostflopView({ formationId, nodeId, onOpenHands, onBack }: Props) {
+export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, onOpenHands, onBack }: Props) {
   const init = readState()
   const [mode, setMode] = useState<PostflopMode>(init.mode)
   const [filter, setFilter] = useState<PostflopFilter>(init.filter)
@@ -115,9 +150,16 @@ export default function PostflopView({ formationId, nodeId, onOpenHands, onBack 
   // Only this formation's spots are loaded; the node report (texture/node/mode)
   // is computed client-side. Drill-down resolves hand ids on demand.
   const [spots, setSpots] = useState<FlopSpot[]>([])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo)).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo])
   const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter), [spots, formationId, nodeId, mode, filter])
   const openHands = async (ids: string[], index: number) => onOpenHands(await fetchHandsByIds(ids), index)
+
+  // Click a category/subcategory in your decision chart to filter the hands list.
+  const [sel, setSel] = useState<Sel | null>(null)
+  useEffect(() => { setSel(null) }, [nodeId, formationId]) // reset when the node changes
+  const pickSel = (s: Sel) => setSel(cur => (cur && cur.made === s.made && cur.sub === s.sub) ? null : s)
+  const topKey = (k?: HandClass) => (k ? (k.made ?? (k.draws.length ? 'draw' : 'air')) : 'air')
+  const shown = sel ? r.listSpots.filter(x => topKey(x.klass) === sel.made && (!sel.sub || x.klass?.sub === sel.sub)) : r.listSpots
 
   // Mirror state into the URL (replace, so it doesn't spam history) so back/refresh restore it.
   useEffect(() => {
@@ -128,7 +170,7 @@ export default function PostflopView({ formationId, nodeId, onOpenHands, onBack 
 
   const set = (patch: Partial<PostflopFilter>) => setFilter(f => ({ ...f, ...patch }))
 
-  const handList = r.listSpots.map(x => x.spot.handId)
+  const handList = shown.map(x => x.spot.handId)
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -161,17 +203,25 @@ export default function PostflopView({ formationId, nodeId, onOpenHands, onBack 
           {/* Center: YOUR decision + hands */}
           <div className="flex-1 min-w-[360px]">
             <div className="text-xs text-yellow-300/80 mb-2">{mode === 'hero' ? 'Your decision — range & action' : 'Field — range & action'}</div>
-            <NodeChart node={r.heroNode} />
+            <NodeChart node={r.heroNode} selected={sel} onSelect={pickSel} />
 
             {r.listSpots.length > 0 && (
               <div className="border border-gray-800 rounded-lg bg-black/20 mt-3">
+                {sel && (
+                  <div className="px-3 py-1.5 border-b border-gray-800 text-xs flex items-center gap-2 bg-yellow-500/5">
+                    <span className="text-gray-400">showing</span>
+                    <span className="text-yellow-300">{sel.sub ?? sel.made}</span>
+                    <span className="text-gray-600">· {shown.length} hands</span>
+                    <button onClick={() => setSel(null)} className="ml-auto text-gray-500 hover:text-white">clear ✕</button>
+                  </div>
+                )}
                 <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-500 flex gap-3">
                   <span className="w-28">{mode === 'hero' ? 'your hand' : 'hand'}</span>
                   <span className="w-32">{street}</span>
                   <span className="w-16">action</span>
                   <span className="min-w-0 flex-1">hand class</span>
                 </div>
-                {r.listSpots.map((x, i) => (
+                {shown.map((x, i) => (
                   <button key={x.spot.handId} onClick={() => openHands(handList, i)}
                     className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-white/5 transition-colors text-left text-xs">
                     <span className="w-28 flex gap-0.5">{x.cards?.map((c, j) => <PlayingCard key={j} card={c} tiny />)}</span>

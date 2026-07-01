@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
-import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands } from './lib/handsApi'
+import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands, type DateRange } from './lib/handsApi'
+import { monthRange } from './components/MonthRange'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
@@ -106,6 +107,10 @@ export default function App() {
   const [reportGrid, setReportGrid] = useState<ReportGridRow[]>([])
   // 6-max vs heads-up — top-level filter for reports/leakbuster/postflop
   const [kind, setKind] = useState<TableKind>('sixmax')
+  // Month-range filter (inclusive; '' = all-time), shared across the three tabs.
+  const [monthFrom, setMonthFrom] = useState('')
+  const [monthTo, setMonthTo] = useState('')
+  const setMonths = (from: string, to: string) => { setMonthFrom(from); setMonthTo(to) }
   // a single report's drill-down hands (fetched only when a report is opened)
   const [detailHands, setDetailHands] = useState<ParsedHand[]>([])
   const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -142,16 +147,13 @@ export default function App() {
   }
 
   // Reports/Leakbuster menu — the compact preflop grid (no hand pool fetched).
-  // Prefetched once on mount so entering Reports/Leakbuster is instant; the grid
-  // is small and serves both views (population + your-hands columns).
-  const gridFetched = useRef(false)
-  async function loadReportGrid() {
-    if (gridFetched.current) { setReportStatus('idle'); return }
+  // Kept fresh in the background so entering Reports/Leakbuster is instant; the
+  // grid is small and serves both views (population + your-hands columns).
+  async function loadReportGrid(range: DateRange) {
     setReportStatus('loading')
     setReportError(null)
     try {
-      setReportGrid(await fetchReportGrid())
-      gridFetched.current = true
+      setReportGrid(await fetchReportGrid(range))
       setReportStatus('idle')
     } catch (e) {
       setReportError(String((e as Error).message ?? e))
@@ -169,16 +171,15 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
-  // Prefetch the report grid in the background (from any view) so opening
-  // Reports/Leakbuster shows instantly. Cheap; safe to fire on mount.
-  useEffect(() => { loadReportGrid() // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // (Re)fetch the report grid on mount and whenever the month range changes —
+  // prefetched from any view so opening Reports/Leakbuster is instant.
+  useEffect(() => { loadReportGrid(monthRange(monthFrom, monthTo)) // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthFrom, monthTo])
 
-  // Fetch data when entering database/reports/leakbuster/postflop (covers direct loads & refresh).
+  // Fetch data when entering the database view (reports grid is kept fresh above;
+  // postflop fetches its own per-formation spots inside PostflopMenu/View).
   useEffect(() => {
     if (view === 'database') loadDatabase()
-    else if (view === 'reports' || view === 'leakbuster') loadReportGrid()
-    // postflop fetches its own per-formation spots inside PostflopMenu/View
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -198,7 +199,7 @@ export default function App() {
   // Keyed on the report's identity (not multiway — that's filtered client-side).
   const reportSelForDetail = (view === 'reports' || view === 'leakbuster') ? parseReportSel(path) : null
   const detailKey = reportSelForDetail
-    ? `${view}:${kind}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
+    ? `${view}:${kind}:${monthFrom}:${monthTo}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
     : ''
   useEffect(() => {
     if (!reportSelForDetail) return
@@ -206,7 +207,7 @@ export default function App() {
     let cancelled = false
     setDetailStatus('loading')
     setDetailHands([])
-    fetchReportHands(reportSelForDetail, subject, kind)
+    fetchReportHands(reportSelForDetail, subject, kind, monthRange(monthFrom, monthTo))
       .then(({ hands }) => { if (!cancelled) { setDetailHands(hands); setDetailStatus('idle') } })
       .catch(() => { if (!cancelled) setDetailStatus('error') })
     return () => { cancelled = true }
@@ -399,7 +400,7 @@ export default function App() {
     if (reportStatus === 'loading') return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load reports" detail={reportError ?? ''} onBack={() => navigate('/')} />
     if (reportSel === null) {
-      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
     if (detailStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate(base)} />
     const solverTable = solver && solver.url === solverUrl(reportSel, kind) ? solver.table : undefined
@@ -454,6 +455,9 @@ export default function App() {
         <PostflopMenu
           kind={kind}
           onKind={setKind}
+          monthFrom={monthFrom}
+          monthTo={monthTo}
+          onMonths={setMonths}
           onOpen={(formationId, nodeId) => navigate(`/postflop/${formationId}/${nodeId}${window.location.search}`)}
           onBack={() => navigate('/')}
         />
@@ -463,6 +467,8 @@ export default function App() {
       <PostflopView
         formationId={pfSel.formationId}
         nodeId={pfSel.nodeId}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(`/postflop${window.location.search}`)}
       />

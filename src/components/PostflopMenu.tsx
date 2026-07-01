@@ -6,6 +6,7 @@ import {
 import { fetchFlopSpots, fetchFlopCounts } from '../lib/handsApi'
 import type { TableKind } from '../lib/positionUtils'
 import { KindToggle } from './KindToggle'
+import { MonthRange, monthRange } from './MonthRange'
 import { StreetFilters } from './PostflopFilters'
 
 // Mode + board filters + selected formation live in the URL query.
@@ -24,6 +25,9 @@ function readState() {
 interface Props {
   kind: TableKind
   onKind: (k: TableKind) => void
+  monthFrom: string
+  monthTo: string
+  onMonths: (from: string, to: string) => void
   onOpen: (formationId: string, nodeId: string) => void
   onBack: () => void
 }
@@ -104,7 +108,7 @@ function NodeRow({ label, sub, cells, pfa, onOpen }: {
   )
 }
 
-export default function PostflopMenu({ kind, onKind, onOpen, onBack }: Props) {
+export default function PostflopMenu({ kind, onKind, monthFrom, monthTo, onMonths, onOpen, onBack }: Props) {
   const init = readState()
   const formations = FORMATIONS.filter(f => f.kind === kind)
   const [formationId, setFormationId] = useState(init.formationId)
@@ -121,12 +125,12 @@ export default function PostflopMenu({ kind, onKind, onOpen, onBack }: Props) {
   // Only the selected formation's spots are loaded; the tree (texture/line/node/
   // mode) is then computed client-side. Switching formation refetches.
   const [spots, setSpots] = useState<FlopSpot[]>([])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo)).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo])
 
   // Per-formation sample counts (the selector bubbles) come from the server under
-  // the active board filter + mode.
+  // the active board filter + mode + month range.
   const [counts, setCounts] = useState<Record<string, number>>({})
-  useEffect(() => { let live = true; fetchFlopCounts(mode, filter).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter])
+  useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo)).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo])
 
   const tree = useMemo(() => formationTree(spots, formationId, mode, filter), [spots, formationId, mode, filter])
   // Order lines most-passive → most-aggressive (by first action): check-check,
@@ -152,6 +156,7 @@ export default function PostflopMenu({ kind, onKind, onOpen, onBack }: Props) {
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <span className="text-white font-semibold">Postflop</span>
         <KindToggle kind={kind} onChange={onKind} />
+        <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
           {(['hero', 'population'] as PostflopMode[]).map(m => (
             <button key={m} onClick={() => setMode(m)} className={`px-3 py-1 transition-colors ${mode === m ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
