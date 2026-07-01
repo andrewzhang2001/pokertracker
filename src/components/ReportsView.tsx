@@ -37,65 +37,55 @@ const selKey = (sel: ReportSel) =>
     : sel.type === 'vs3bet' ? `vs3bet:${sel.opener}:${sel.tag}`
     : `limpiso:${sel.iso}`
 
-// One diverging bar: left and right segments grow OUTWARD from the center, each
-// sized by its own EV-lost — so mistakes in BOTH directions both show (a player
-// who errs tight AND loose has two long halves, not a cancelled-out "neutral").
-function Bar({ leftVal, rightVal, leftColor, rightColor, scale, compact }: {
-  leftVal: number; rightVal: number; leftColor: string; rightColor: string; scale: number; compact?: boolean
-}) {
-  const lw = (leftVal / scale) * 50
-  const rw = (rightVal / scale) * 50
-  return (
-    <div className={`relative ${compact ? 'h-1.5' : 'h-3'} flex-1 rounded bg-gray-800/80`}>
-      <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-600" />
-      <div className="absolute top-0 bottom-0" style={{ right: '50%', width: `${lw}%`, background: leftColor, borderRadius: '2px 0 0 2px' }} />
-      <div className="absolute top-0 bottom-0" style={{ left: '50%', width: `${rw}%`, background: rightColor, borderRadius: '0 2px 2px 0' }} />
-    </div>
-  )
-}
+const TIGHT_C = '#9ca3af', LOOSE_C = '#f59e0b', PASSIVE_C = '#3b82f6', AGGRO_C = '#ef4444'
 
-const TIGHT_C = '#6b7280', LOOSE_C = '#f59e0b', PASSIVE_C = '#3b82f6', AGGRO_C = '#ef4444'
-
-// Labeled bar row (detail view): "Tight −0.12  [bar]  Loose −0.34".
-function MeterRow({ leftLabel, leftVal, leftColor, rightLabel, rightVal, rightColor, scale }: {
-  leftLabel: string; leftVal: number; leftColor: string; rightLabel: string; rightVal: number; rightColor: string; scale: number
-}) {
-  return (
-    <div className="flex items-center gap-2 text-xs my-1">
-      <span className="w-24 text-right text-gray-400">{leftLabel}{leftVal > 0.005 && <span className="text-gray-500"> −{leftVal.toFixed(2)}</span>}</span>
-      <Bar leftVal={leftVal} rightVal={rightVal} leftColor={leftColor} rightColor={rightColor} scale={scale} />
-      <span className="w-24 text-gray-400">{rightLabel}{rightVal > 0.005 && <span className="text-gray-500"> −{rightVal.toFixed(2)}</span>}</span>
-    </div>
-  )
-}
-
-// The leak profile as diverging bars on both axes. `compact` = the tiny unlabeled
-// version shown on a report tile.
-function LeakBars({ ev, compact = false }: { ev: EvSummary; compact?: boolean }) {
+// The leak profile as 4 arrows from a center — up = aggressive, right = loose,
+// down = passive, left = tight — each arrow's length sized by its OWN EV lost.
+// Every direction shows independently, so a player who errs badly both ways has
+// two long arrows (no cancelled-out "neutral"). RFI has no aggression axis, so
+// only the left/right (tight/loose) arrows show.
+function ArrowGlyph({ ev, size = 34, labels = false }: { ev: EvSummary; size?: number; labels?: boolean }) {
   const { tight, loose, passive, aggressive } = ev.axes
   const scale = Math.max(tight, loose, passive, aggressive, 0.0001)
-  if (compact) {
+  const MAX = 30 // max LINE length in the 100×100 viewBox (center at 50,50); the
+                 // arrowhead sits beyond it, so the line length = the magnitude.
+  const arrow = (val: number, dx: number, dy: number, color: string) => {
+    const len = (val / scale) * MAX
+    if (len < 2) return null
+    const ex = 50 + dx * len, ey = 50 + dy * len          // end of the line (= magnitude)
+    const hl = 12, hw = 8.5
+    const tipx = ex + dx * hl, tipy = ey + dy * hl          // arrowhead tip, beyond the line
+    const px = -dy, py = dx // perpendicular
     return (
-      <div className="flex flex-col gap-0.5 w-9 shrink-0">
-        <Bar leftVal={tight} rightVal={loose} leftColor={TIGHT_C} rightColor={LOOSE_C} scale={scale} compact />
-        {ev.aggressionAxis && <Bar leftVal={passive} rightVal={aggressive} leftColor={PASSIVE_C} rightColor={AGGRO_C} scale={scale} compact />}
-      </div>
+      <g stroke={color} fill={color} strokeWidth={9} strokeLinecap="round">
+        <line x1={50} y1={50} x2={ex} y2={ey} />
+        <polygon stroke="none" points={`${tipx},${tipy} ${ex + px * hw},${ey + py * hw} ${ex - px * hw},${ey - py * hw}`} />
+      </g>
     )
   }
-  const { label, nickname } = leakProfile(ev.axes)
+  const svg = (
+    <svg width={size} height={size} viewBox="0 0 100 100" className="shrink-0 overflow-visible">
+      <circle cx={50} cy={50} r={5} fill="#6b7280" />
+      {arrow(loose, 1, 0, LOOSE_C)}
+      {arrow(tight, -1, 0, TIGHT_C)}
+      {ev.aggressionAxis && arrow(aggressive, 0, -1, AGGRO_C)}
+      {ev.aggressionAxis && arrow(passive, 0, 1, PASSIVE_C)}
+    </svg>
+  )
+  if (!labels) return svg
   return (
-    <div className="max-w-md mx-auto">
-      <div className="text-center text-sm mb-1">
-        <span className="text-gray-400">Profile: </span>
-        <span className="font-semibold text-white">{label}{nickname && ` (${nickname})`}</span>
-      </div>
-      <MeterRow leftLabel="Tight" leftVal={tight} leftColor={TIGHT_C} rightLabel="Loose" rightVal={loose} rightColor={LOOSE_C} scale={scale} />
-      {ev.aggressionAxis && (
-        <MeterRow leftLabel="Passive" leftVal={passive} leftColor={PASSIVE_C} rightLabel="Aggressive" rightVal={aggressive} rightColor={AGGRO_C} scale={scale} />
-      )}
+    <div className="relative inline-flex items-center justify-center" style={{ width: size + 56, height: size + 30 }}>
+      {svg}
+      <span className="absolute left-1/2 -translate-x-1/2 top-0 text-[10px] text-red-300/90">aggressive</span>
+      <span className="absolute left-1/2 -translate-x-1/2 bottom-0 text-[10px] text-blue-300/90">passive</span>
+      <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">tight</span>
+      <span className="absolute right-0 top-1/2 -translate-y-1/2 text-[10px] text-yellow-300/90">loose</span>
     </div>
   )
 }
+
+// Equal-length reference glyph for the legend (all four directions the same).
+const LEGEND_EV = { axes: { tight: 1, loose: 1, passive: 1, aggressive: 1 }, aggressionAxis: true } as EvSummary
 
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
@@ -146,7 +136,7 @@ export function ReportsMenu({ grid, kind, onKind, onOpen, onBack, subject = 'pop
             <div className="text-white text-sm font-medium truncate">{label}</div>
             <div className="text-gray-500 text-xs mt-0.5">{r.total} spots</div>
           </div>
-          {hasEv && <LeakBars ev={r.ev!} compact />}
+          {hasEv && <ArrowGlyph ev={r.ev!} size={34} />}
         </div>
         {r.total > 0 && (
           <div className="text-xs font-semibold mt-0.5">
@@ -189,14 +179,13 @@ export function ReportsMenu({ grid, kind, onKind, onOpen, onBack, subject = 'pop
         </span>
       </div>
 
-      {/* Profile-bars legend: each tile's two mini bars are the leak profile —
-          top bar tight↔loose, bottom bar passive↔aggressive; each half grows
-          with its own EV lost, so both directions show independently. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
-        <span className="text-gray-600">tile bars:</span>
-        <span><span className="text-gray-400">tight</span> ◂▸ <span className="text-yellow-300/90">loose</span></span>
-        <span><span className="text-blue-300/90">passive</span> ◂▸ <span className="text-red-300/90">aggressive</span></span>
-        <span className="text-gray-600">· longer half = more EV lost that way</span>
+      {/* Profile-arrows legend: one compass showing the 4 leak directions.
+          Each tile's arrows are the leak profile; arrow length = EV lost that
+          way, so every direction shows independently. */}
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        <span className="text-gray-600">tile arrows:</span>
+        <ArrowGlyph ev={LEGEND_EV} size={48} labels />
+        <span className="text-gray-600">arrow length = EV lost that way</span>
       </div>
 
       {hu ? (
@@ -322,7 +311,12 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra }
                   <span className="text-red-400 font-semibold">−{(result.ev.perSpotBb * 100).toFixed(2)} bb/100</span>
                   <span className="text-gray-600"> · total −{result.ev.totalBb.toFixed(1)} bb over {result.ev.spots} spots</span>
                 </div>
-                <div className="mt-3"><LeakBars ev={result.ev} /></div>
+                <div className="mt-3 flex flex-col items-center gap-1">
+                  <ArrowGlyph ev={result.ev} size={90} labels />
+                  {(() => { const { label, nickname } = leakProfile(result.ev.axes); return (
+                    <div className="text-sm font-semibold text-white">{label}{nickname && <span className="text-gray-500 font-normal"> ({nickname})</span>}</div>
+                  ) })()}
+                </div>
                 {result.ev.directions.length > 0 && (
                   <div className="mt-3 max-w-md mx-auto">
                     <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 text-center">
