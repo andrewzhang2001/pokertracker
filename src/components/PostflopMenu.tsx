@@ -5,7 +5,9 @@ import {
 } from '../lib/postflop'
 import { fetchFlopSpots, fetchFlopCounts } from '../lib/handsApi'
 import type { TableKind } from '../lib/positionUtils'
+import type { GameKind } from '../lib/games'
 import { KindToggle } from './KindToggle'
+import { GameToggle } from './GameToggle'
 import { MonthRange, monthRange } from './MonthRange'
 import { StreetFilters } from './PostflopFilters'
 
@@ -25,6 +27,8 @@ function readState() {
 interface Props {
   kind: TableKind
   onKind: (k: TableKind) => void
+  game: GameKind
+  onGame: (g: GameKind) => void
   monthFrom: string
   monthTo: string
   onMonths: (from: string, to: string) => void
@@ -108,7 +112,7 @@ function NodeRow({ label, sub, cells, pfa, onOpen }: {
   )
 }
 
-export default function PostflopMenu({ kind, onKind, monthFrom, monthTo, onMonths, onOpen, onBack }: Props) {
+export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, monthTo, onMonths, onOpen, onBack }: Props) {
   const init = readState()
   const formations = FORMATIONS.filter(f => f.kind === kind)
   const [formationId, setFormationId] = useState(init.formationId)
@@ -125,12 +129,12 @@ export default function PostflopMenu({ kind, onKind, monthFrom, monthTo, onMonth
   // Only the selected formation's spots are loaded; the tree (texture/line/node/
   // mode) is then computed client-side. Switching formation refetches.
   const [spots, setSpots] = useState<FlopSpot[]>([])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo)).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
 
   // Per-formation sample counts (the selector bubbles) come from the server under
   // the active board filter + mode + month range.
   const [counts, setCounts] = useState<Record<string, number>>({})
-  useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo)).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo])
+  useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo, game])
 
   const tree = useMemo(() => formationTree(spots, formationId, mode, filter), [spots, formationId, mode, filter])
   // Order lines most-passive → most-aggressive (by first action): check-check,
@@ -155,6 +159,7 @@ export default function PostflopMenu({ kind, onKind, monthFrom, monthTo, onMonth
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-gray-800 text-sm flex-wrap">
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <span className="text-white font-semibold">Postflop</span>
+        <GameToggle game={game} onChange={onGame} />
         <KindToggle kind={kind} onChange={onKind} />
         <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">

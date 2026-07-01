@@ -7,6 +7,7 @@ import type { ReportGridRow, ReportSel } from './reports'
 import type { FlopSpot, PostflopFilter, PostflopMode } from './postflop'
 import { writeFilter } from './postflop'
 import type { TableKind } from './positionUtils'
+import type { GameKind } from './games'
 import { authHeaders } from './auth'
 
 // Hands per POST. The whole batch is one JSON body; Vercel caps request bodies
@@ -82,8 +83,9 @@ export async function fetchReportGrid(range?: DateRange): Promise<ReportGridRow[
 
 // Hands for ONE report's drill-down — only those with a qualifying spot, so the
 // detail view can re-derive populated bucket lists with buildReport cheaply.
-export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange): Promise<{ hands: ParsedHand[]; notes: string[] }> {
-  const p = withRange(new URLSearchParams({ view: 'report-hands', subject, kind }), range)
+export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange, game: GameKind = 'plo', combo?: string): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const p = withRange(new URLSearchParams({ view: 'report-hands', subject, kind, game }), range)
+  if (combo) p.set('combo', combo) // drill to one 13×13 grid cell
   if (sel.type === 'rfi') { p.set('type', 'rfi'); p.set('pos_a', sel.pos) }
   else if (sel.type === 'vsrfi') { p.set('type', 'vsrfi'); p.set('pos_a', sel.defender); p.set('pos_b', sel.opener) }
   else if (sel.type === 'vs3bet') { p.set('type', 'vs3bet'); p.set('pos_a', sel.opener); p.set('pos_b', sel.tag) }
@@ -100,8 +102,8 @@ export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'popula
 // One formation's slim postflop spots — the browser runs the node-walk over
 // these (board texture / line / node / mode all stay client-side). `hand` is
 // omitted; drill-down resolves it via fetchHandsByIds.
-export async function fetchFlopSpots(formationId: string, range?: DateRange): Promise<FlopSpot[]> {
-  const p = withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId }), range)
+export async function fetchFlopSpots(formationId: string, range?: DateRange, mode: PostflopMode = 'population', game: GameKind = 'plo'): Promise<FlopSpot[]> {
+  const p = withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId, mode, game }), range)
   const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load spots')
   const data = await res.json() as { spots?: FlopSpot[] }
@@ -109,8 +111,8 @@ export async function fetchFlopSpots(formationId: string, range?: DateRange): Pr
 }
 
 // Per-formation sample counts under the active board filter (postflop menu tiles).
-export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange): Promise<Record<string, number>> {
-  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode }), range)
+export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange, game: GameKind = 'plo'): Promise<Record<string, number>> {
+  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode, game }), range)
   writeFilter(q, filter)
   const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load counts')
@@ -129,8 +131,11 @@ export async function fetchHandsByIds(ids: string[]): Promise<ParsedHand[]> {
 }
 
 // Lightweight graph feed — YOUR precomputed per-hand result numbers (no parsing).
-export async function fetchGraphFromDb(): Promise<GraphRow[]> {
-  const res = await fetch('/api/hands?view=graph', { headers: await authHeaders() })
+// `game` optionally restricts to PLO or NLHE; omitted = all games.
+export async function fetchGraphFromDb(game?: GameKind): Promise<GraphRow[]> {
+  const q = new URLSearchParams({ view: 'graph' })
+  if (game) q.set('game', game)
+  const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load graph')
   const data = await res.json() as { rows?: { played_at: number | null; net_bb: number; adj_net_bb: number | null; rake_bb: number | null }[] }
   return (data.rows ?? []).map(r => ({

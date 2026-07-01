@@ -8,6 +8,7 @@ import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
 import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, vs3betSpots, vs3betReport, limpVsIsoSpots, limpVsIsoReport, buildReport, leakProfile } from '../reports'
 import { ploCombo } from '../ploCombo'
+import { holdemCombo } from '../holdemCombo'
 import { flopTexture, straightPossibleFlop, straightPossibleBoard, boardPaired, boardSuits, extractFlopSpot, extractSpots, formationReport, EMPTY_FILTER } from '../postflop'
 import { classifyFlop, classifyBoard } from '../ploEval'
 import { showdownEquities } from '../equity'
@@ -650,6 +651,15 @@ describe('ploCombo – dealt hand → solver combo key', () => {
     expect(ploCombo(C('Ah 4h 3h 2h'))).toBe('[A432]')    // monotone
   })
 
+  test('holdemCombo – 169-hand keys', () => {
+    expect(holdemCombo(C('As Ah'))).toBe('AA')       // pair
+    expect(holdemCombo(C('As Ks'))).toBe('AKs')      // suited
+    expect(holdemCombo(C('As Kh'))).toBe('AKo')      // offsuit
+    expect(holdemCombo(C('7s 2d'))).toBe('72o')
+    expect(holdemCombo(C('2d 7s'))).toBe('72o')      // order-independent
+    expect(holdemCombo(C('Kh Ah'))).toBe('AKs')      // high rank first
+  })
+
   test('every parsed PLO hole hand maps to a real solver combo (BU table)', () => {
     const table = JSON.parse(readFileSync(resolve(root, 'public/solver/rfi/bu.json'), 'utf-8'))
     const hands = parseHandHistories(hhPlo)
@@ -826,6 +836,21 @@ describe('ploEval – flop hand classification', () => {
     expect(cb('Kh 8c 4d 3s', '7s 5d 2c Kd').made).toBe('top pair')
     // flush DRAW still pending after the turn (2 hole + 2 board suited)
     expect(cb('Ah 2h 5c 7d', 'Kh 9h 3c Qs').draws).toContain('flush draw')
+  })
+
+  test('classifyBoard – Hold\'em plays the board (game=nlhe)', () => {
+    const nl = (hole: string, board: string) => classifyBoard(C(hole), C(board), 'nlhe').made
+    const plo = (hole: string, board: string) => classifyBoard(C(hole), C(board)).made // default 'plo'
+    // paired board: Hold'em plays the board pair (Kx on KQQ = two pair);
+    // PLO can't borrow the board pair with one hole card → just top pair.
+    expect(nl('Kh 2c', 'Ks Qd Qc')).toBe('two pair')
+    expect(plo('Kh 2c 5d 7s', 'Ks Qd Qc')).toBe('top pair')
+    // board flush on the turn: Hold'em makes it with ONE hole card; PLO needs two.
+    expect(nl('Ah 2c', 'Kh Qh 7h 3h')).toBe('flush')
+    // board trips stay trips for Hold'em (plays the board); PLO shares them away.
+    expect(nl('Ah 2c', '6h 6d 6s Kc')).toBe('trips')
+    // PLO default is unchanged by the new game param (exactly-2 flush).
+    expect(plo('Ah 2h 5c 7d', 'Kh 9h 3c Qh')).toBe('flush')
   })
 })
 

@@ -1,4 +1,5 @@
 import type { ParsedCard, ParsedHand, HandState } from './types'
+import { gameKind } from './games'
 
 // ---------------------------------------------------------------------------
 // Postflop showdown equity. Given the players still in the pot (with their
@@ -136,7 +137,7 @@ export function computeEquities(hand: ParsedHand, state: HandState): Record<numb
   if (board.length < 3) return out
   const live = state.players.filter(p => !p.folded)
   if (live.length < 2) return out
-  const omaha = /OMAHA/i.test(hand.gameType)
+  const omaha = gameKind(hand.gameType) === 'plo'  // PLO uses 2-of-4; NLHE best-5-of-7
   const need = omaha ? 4 : 2
   if (!live.every(p => p.holeCards && p.holeCards.length >= need)) return out
   const eqs = showdownEquities(live.map(p => p.holeCards!), board, omaha)

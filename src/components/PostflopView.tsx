@@ -5,6 +5,7 @@ import {
   type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp,
 } from '../lib/postflop'
 import type { HandClass } from '../lib/ploEval'
+import type { GameKind } from '../lib/games'
 import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
 import { monthRange } from './MonthRange'
 import PlayingCard from './PlayingCard'
@@ -24,6 +25,7 @@ function readState() {
 interface Props {
   formationId: string
   nodeId: string
+  game: GameKind
   monthFrom: string
   monthTo: string
   onOpenHands: (hands: ParsedHand[], index: number) => void
@@ -178,7 +180,7 @@ function FacingRange({ comp, barColor, onView }: { comp: RangeComp; barColor: st
   )
 }
 
-export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, onOpenHands, onBack }: Props) {
+export default function PostflopView({ formationId, nodeId, game, monthFrom, monthTo, onOpenHands, onBack }: Props) {
   const init = readState()
   const [mode, setMode] = useState<PostflopMode>(init.mode)
   const [filter, setFilter] = useState<PostflopFilter>(init.filter)
@@ -192,7 +194,7 @@ export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, 
   // Only this formation's spots are loaded; the node report (texture/node/mode)
   // is computed client-side. Drill-down resolves hand ids on demand.
   const [spots, setSpots] = useState<FlopSpot[]>([])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo)).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
   // Bet-size filter (only when facing a bet): narrows all panels to that faced size.
   const facesBet = node ? nodeFacesBet(node) : false
   const [facedBet, setFacedBet] = useState<BetBucket>('all')

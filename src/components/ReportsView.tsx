@@ -7,7 +7,9 @@ import {
   type ReportGridRow,
 } from '../lib/reports'
 import type { TableKind } from '../lib/positionUtils'
+import type { GameKind } from '../lib/games'
 import { KindToggle } from './KindToggle'
+import { GameToggle } from './GameToggle'
 import { MonthRange } from './MonthRange'
 import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
@@ -91,10 +93,12 @@ const LEGEND_EV = { axes: { tight: 1, loose: 1, passive: 1, aggressive: 1 }, agg
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ grid, kind, onKind, monthFrom, monthTo, onMonths, onOpen, onBack, subject = 'population', title = 'Reports' }: {
+export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, monthTo, onMonths, onOpen, onBack, subject = 'population', title = 'Reports' }: {
   grid: ReportGridRow[]
   kind: TableKind
   onKind: (k: TableKind) => void
+  game: GameKind
+  onGame: (g: GameKind) => void
   monthFrom: string
   monthTo: string
   onMonths: (from: string, to: string) => void
@@ -123,9 +127,9 @@ export function ReportsMenu({ grid, kind, onKind, monthFrom, monthTo, onMonths, 
   // Build every report from the compact grid (with solver EVs once tables load).
   const previews = useMemo(() => {
     const m = new Map<string, ReportResult>()
-    for (const sel of selsFor(kind)) m.set(selKey(sel), buildReportFromGrid(grid, sel, tables.get(solverUrl(sel, kind)), subject, kind))
+    for (const sel of selsFor(kind)) m.set(selKey(sel), buildReportFromGrid(grid, sel, tables.get(solverUrl(sel, kind)), subject, kind, game))
     return m
-  }, [grid, tables, subject, kind])
+  }, [grid, tables, subject, kind, game])
 
   const Tile = ({ sel, label }: { sel: ReportSel; label: string }) => {
     const r = previews.get(selKey(sel))!
@@ -176,6 +180,7 @@ export function ReportsMenu({ grid, kind, onKind, monthFrom, monthTo, onMonths, 
           ← Home
         </button>
         <h1 className="text-2xl font-bold text-white">{title}</h1>
+        <GameToggle game={game} onChange={onGame} />
         <KindToggle kind={kind} onChange={onKind} />
         <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>

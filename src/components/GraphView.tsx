@@ -56,17 +56,21 @@ function Chart({ points }: { points: { i: number; cum: number; cumAdj: number }[
   )
 }
 
+type GameFilter = 'all' | 'plo' | 'nlhe'
+
 export default function GraphView({ onBack }: Props) {
   const [rows, setRows] = useState<GraphRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [game, setGame] = useState<GameFilter>('all')
 
   useEffect(() => {
     let cancelled = false
-    fetchGraphFromDb()
+    setRows(null); setError(null)
+    fetchGraphFromDb(game === 'all' ? undefined : game)
       .then(r => { if (!cancelled) setRows(r) })
       .catch(e => { if (!cancelled) setError(String((e as Error).message ?? e)) })
     return () => { cancelled = true }
-  }, [])
+  }, [game])
 
   const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows) : null), [rows])
 
@@ -75,6 +79,14 @@ export default function GraphView({ onBack }: Props) {
       <div className="flex items-center gap-3">
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <h1 className="text-2xl font-bold text-white">Graph</h1>
+        <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
+          {(['all', 'plo', 'nlhe'] as GameFilter[]).map(gk => (
+            <button key={gk} onClick={() => setGame(gk)}
+              className={`px-3 py-1 transition-colors ${game === gk ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
+              {gk === 'all' ? 'All' : gk === 'plo' ? 'PLO' : 'NLHE'}
+            </button>
+          ))}
+        </div>
         {g && <span className="text-gray-600 text-xs">{g.hands} hands · BB won/lost over time</span>}
       </div>
 

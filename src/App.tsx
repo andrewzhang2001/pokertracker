@@ -8,10 +8,12 @@ import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import type { TableKind } from './lib/positionUtils'
+import type { GameKind } from './lib/games'
 import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
+import HandGrid from './components/HandGrid'
 import PostflopView from './components/PostflopView'
 import PostflopMenu from './components/PostflopMenu'
 import GraphView from './components/GraphView'
@@ -107,6 +109,8 @@ export default function App() {
   const [reportGrid, setReportGrid] = useState<ReportGridRow[]>([])
   // 6-max vs heads-up — top-level filter for reports/leakbuster/postflop
   const [kind, setKind] = useState<TableKind>('sixmax')
+  // PLO vs NLHE — a second dimension. NLHE reports render a 13×13 frequency grid.
+  const [game, setGame] = useState<GameKind>('plo')
   // Month-range filter (inclusive; '' = all-time), shared across the three tabs.
   const [monthFrom, setMonthFrom] = useState('')
   const [monthTo, setMonthTo] = useState('')
@@ -199,10 +203,11 @@ export default function App() {
   // Keyed on the report's identity (not multiway — that's filtered client-side).
   const reportSelForDetail = (view === 'reports' || view === 'leakbuster') ? parseReportSel(path) : null
   const detailKey = reportSelForDetail
-    ? `${view}:${kind}:${monthFrom}:${monthTo}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
+    ? `${view}:${game}:${kind}:${monthFrom}:${monthTo}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
     : ''
   useEffect(() => {
-    if (!reportSelForDetail) return
+    // NLHE builds its 13×13 grid straight off the aggregate grid — no hand-pool fetch.
+    if (!reportSelForDetail || game === 'nlhe') return
     const subject = view === 'leakbuster' ? 'hero' : 'population'
     let cancelled = false
     setDetailStatus('loading')
@@ -400,7 +405,20 @@ export default function App() {
     if (reportStatus === 'loading') return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load reports" detail={reportError ?? ''} onBack={() => navigate('/')} />
     if (reportSel === null) {
-      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+    }
+    // NLHE: a 13×13 frequency grid built from the aggregate grid (no EV, no pool fetch).
+    if (game === 'nlhe') {
+      return (
+        <HandGrid
+          grid={reportGrid} sel={reportSel} subject={subject} kind={kind} title={title}
+          onBack={() => navigate(base)}
+          onOpenCell={async combo => {
+            const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo)
+            if (hands.length) setDrill({ hands, notes, index: 0 })
+          }}
+        />
+      )
     }
     if (detailStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate(base)} />
     const solverTable = solver && solver.url === solverUrl(reportSel, kind) ? solver.table : undefined
@@ -455,6 +473,8 @@ export default function App() {
         <PostflopMenu
           kind={kind}
           onKind={setKind}
+          game={game}
+          onGame={setGame}
           monthFrom={monthFrom}
           monthTo={monthTo}
           onMonths={setMonths}
@@ -467,6 +487,7 @@ export default function App() {
       <PostflopView
         formationId={pfSel.formationId}
         nodeId={pfSel.nodeId}
+        game={game}
         monthFrom={monthFrom}
         monthTo={monthTo}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}

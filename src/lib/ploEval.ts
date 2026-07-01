@@ -1,4 +1,5 @@
 import type { ParsedCard } from './types'
+import type { GameKind } from './games'
 
 // ---------------------------------------------------------------------------
 // PLO flop hand classifier. Omaha uses EXACTLY 2 hole cards. Returns the made
@@ -66,31 +67,35 @@ function cat5(cards: ParsedCard[]): number {
   return 0
 }
 
-// best 5-card category using exactly 2 hole + 3 board (works for 3- or 4-card boards)
-function bestCategory(hole: ParsedCard[], board: ParsedCard[]): number {
+// The (hole, board) card sets forming candidate 5-card hands. PLO uses EXACTLY 2
+// hole + 3 board; Hold'em uses the best 5 of all 7 (0–2 hole cards — it can play
+// the board). On a 3-card board the two are identical (only 5 cards total).
+function fiveCardHands(hole: ParsedCard[], board: ParsedCard[], game: GameKind): ParsedCard[][] {
+  if (game === 'nlhe') return combos([...hole, ...board], 5)
+  const out: ParsedCard[][] = []
+  for (const hp of combos(hole, 2)) for (const bp of combos(board, 3)) out.push([...hp, ...bp])
+  return out
+}
+
+function bestCategory(hole: ParsedCard[], board: ParsedCard[], game: GameKind): number {
   let best = 0
-  for (const hp of combos(hole, 2))
-    for (const bp of combos(board, 3))
-      best = Math.max(best, cat5([...hp, ...bp]))
+  for (const h of fiveCardHands(hole, board, game)) best = Math.max(best, cat5(h))
   return best
 }
 
-// Straight possible using exactly 2 hole + 3 of the given board cards?
-function hasStraight(hole: ParsedCard[], board: ParsedCard[]): boolean {
-  for (const hp of combos(hole, 2))
-    for (const bp of combos(board, 3))
-      if (isStraight([...hp, ...bp].map(c => RV[c.rank]))) return true
+function hasStraight(hole: ParsedCard[], board: ParsedCard[], game: GameKind): boolean {
+  for (const h of fiveCardHands(hole, board, game)) if (isStraight(h.map(c => RV[c.rank]))) return true
   return false
 }
 
 // Classify a 2-card hole against a 3-card flop.
-export function classifyFlop(hole: ParsedCard[], flop: ParsedCard[]): HandClass {
-  return classifyBoard(hole, flop)
+export function classifyFlop(hole: ParsedCard[], flop: ParsedCard[], game: GameKind = 'plo'): HandClass {
+  return classifyBoard(hole, flop, game)
 }
 
-// Classify a 2-card hole against a 3- or 4-card board (flop or turn).
-export function classifyBoard(hole: ParsedCard[], board: ParsedCard[]): HandClass {
-  const best = bestCategory(hole, board)
+// Classify a hole against a 3- to 5-card board (flop/turn/river).
+export function classifyBoard(hole: ParsedCard[], board: ParsedCard[], game: GameKind = 'plo'): HandClass {
+  const best = bestCategory(hole, board, game)
 
   // rank/suit tallies
   const hrc: Record<number, number> = {}, brc: Record<number, number> = {}
@@ -131,27 +136,33 @@ export function classifyBoard(hole: ParsedCard[], board: ParsedCard[]): HandClas
   else if (best === 4) made = 'straight'
   else if (best === 3) {
     made = setOrTrips()
-    // Trips that are entirely on the board (e.g. A-J on J666) are shared — demote
-    // to the player's real holding (top pair). A set, or trips made with a hole
-    // card on a paired board, stays.
-    if (made === 'trips' && boardVals.some(v => brc[v] >= 3)) made = pairSubtype()
+    // PLO only: trips entirely on the board (e.g. A-J on J666) are shared — you
+    // can't use the board's third card with just one hole card, so demote to the
+    // real holding (top pair). Hold'em plays the board trips, so it keeps them.
+    if (game === 'plo' && made === 'trips' && boardVals.some(v => brc[v] >= 3)) made = pairSubtype()
   }
-  // Two pair where the second pair is just the paired board (JAT9/99/AA on J33,
-  // KK65 on 622, AA77 on TT2) is shared — demote to the player's real holding.
-  // Only a genuine two pair (two hole cards pairing two board ranks) stays.
-  else if (best === 2) made = matchedPairs() >= 2 ? 'two pair' : pairSubtype()
+  // PLO only: a "two pair" whose second pair is just the paired board (JAT9/99/AA
+  // on J33, KK65 on 622) is shared — PLO spends both hole cards, so it can't also
+  // borrow the board pair. Hold'em CAN play the board pair (Kx on KQQ = two pair),
+  // so it keeps best===2 as genuine two pair.
+  else if (best === 2) made = (game === 'nlhe' || matchedPairs() >= 2) ? 'two pair' : pairSubtype()
   else if (best === 1) made = pairSubtype()
 
   // draws (only if they'd improve on the made hand; meaningless once the board is complete)
   const draws: DrawType[] = []
   const canDraw = board.length < 5
   if (canDraw && best < 5) {
-    for (const s of Object.keys(hsuit)) if (hsuit[s] >= 2 && (bsuit[s] || 0) === 2) { draws.push('flush draw'); break }
+    // PLO needs 2 of a suit in hand + 2 on board; Hold'em just needs 4 total to a
+    // flush across hole+board (so 1 hole + 3 board also draws).
+    for (const s of Object.keys(hsuit)) {
+      const draw = game === 'nlhe' ? hsuit[s] + (bsuit[s] || 0) === 4 : hsuit[s] >= 2 && (bsuit[s] || 0) === 2
+      if (draw) { draws.push('flush draw'); break }
+    }
   }
   if (canDraw && best < 4) {
     let completing = 0
     for (let R = 2; R <= 14; R++) {
-      if (hasStraight(hole, [...board, { rank: VR[R], suit: 'x' as ParsedCard['suit'] }])) completing++
+      if (hasStraight(hole, [...board, { rank: VR[R], suit: 'x' as ParsedCard['suit'] }], game)) completing++
     }
     if (completing >= 3) draws.push('wrap')
     else if (completing === 2) draws.push('OESD')
@@ -188,7 +199,7 @@ export function classifyBoard(hole: ParsedCard[], board: ParsedCard[]): HandClas
       if (ranks.filter(r => boardRanks.has(r)).length >= 3) windows.push(H)
     }
     let hi = 0
-    for (const hp of combos(hole, 2)) for (const bp of combos(board, 3)) { const t = straightTop([...hp, ...bp].map(c => RV[c.rank])); if (t > hi) hi = t }
+    for (const h of fiveCardHands(hole, board, game)) { const t = straightTop(h.map(c => RV[c.rank])); if (t > hi) hi = t }
     sub = hi === windows[0] ? 'straight' : hi === windows[1] ? 'second nut straight' : 'other straight'
   }
   else if (made === 'set') {

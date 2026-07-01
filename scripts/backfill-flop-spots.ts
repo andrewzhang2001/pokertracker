@@ -53,6 +53,7 @@ async function main() {
       spot           jsonb NOT NULL
     )
   `
+  await sql`ALTER TABLE flop_spots ADD COLUMN IF NOT EXISTS game text`
   await sql`CREATE INDEX IF NOT EXISTS flop_spots_formation ON flop_spots (formation_id)`
 
   const rows = await sql`SELECT id, raw_text, owner_id FROM hands` as { id: string; raw_text: string; owner_id: string | null }[]
@@ -78,12 +79,12 @@ async function main() {
     const batch = spots.slice(i, i + CHUNK)
     await sql`
       INSERT INTO flop_spots (
-        hand_id, formation_id, pot_type, oop_pos, ip_pos, oop_is_hero, ip_is_hero,
+        hand_id, game, formation_id, pot_type, oop_pos, ip_pos, oop_is_hero, ip_is_hero,
         flop_suits, flop_paired, flop_straighty, flop_high, flop_mid, flop_low,
         turn_suits, turn_paired, turn_straighty, river_suits, river_paired, river_straighty,
         spot, owner_id)
       SELECT * FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS x(
-        hand_id text, formation_id text, pot_type text, oop_pos text, ip_pos text,
+        hand_id text, game text, formation_id text, pot_type text, oop_pos text, ip_pos text,
         oop_is_hero boolean, ip_is_hero boolean,
         flop_suits text, flop_paired boolean, flop_straighty boolean,
         flop_high text, flop_mid text, flop_low text,
@@ -93,7 +94,7 @@ async function main() {
     console.log(`inserted ${done}/${spots.length}`)
   }
 
-  const summ = await sql`SELECT formation_id, count(*)::int AS spots FROM flop_spots GROUP BY formation_id ORDER BY formation_id`
+  const summ = await sql`SELECT game, formation_id, count(*)::int AS spots FROM flop_spots GROUP BY game, formation_id ORDER BY game, formation_id`
   console.log('summary:', summ)
 }
 

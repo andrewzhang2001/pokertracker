@@ -1,5 +1,6 @@
 import type { ParsedHand, ParsedCard, HandAction } from './types'
 import { displayPosition, type TableKind } from './positionUtils'
+import { gameKind, GAMES } from './games'
 import { computeHandState } from './computeHandState'
 import { classifyFlop, classifyBoard, subRank, type HandClass } from './ploEval'
 
@@ -17,8 +18,9 @@ const RV: Record<string, number> = { '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7'
 
 // Preflop sanity filters (keep spots comparable / on-strategy):
 const MIN_EFF_BB = 75         // effective stack (min of the two players)
-const RFI_MIN_BB = 3.0        // the open must be a real raise
 const THREEBET_MIN_POT = 0.75 // the 3-bet must be ~pot-sized (no tiny 3-bets)
+// The open-size gate reuses the per-game config (GAMES in ./games) — same source
+// of truth as the preflop reports, so PLO/NLHE sizing lives in one place.
 
 export const RANKS_DESC = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
 
@@ -123,12 +125,13 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
   if (potType === '3BP' && (vol[0]?.type !== 'raise' || vol[1]?.type !== 'raise')) return null
 
   // raise-size sanity: real open, and (3BP) a ~pot-sized 3-bet. Blind-vs-blind
-  // opens (SB opener — incl. HU, where the button normalizes to SB) run smaller
-  // (~2.6bb), so loosen the open gate for those (matches BVB_OPEN_MIN_BB).
+  // opens (SB opener — incl. HU, where the button normalizes to SB) run smaller,
+  // so blind openers use the looser floor from the per-game sizing config.
   const openTo = vol[0].amount ?? 0
   const openerPlayer = hand.players.find(p => p.seatNumber === vol[0].seatNumber)
   const openerIsSB = !!openerPlayer && displayPosition(openerPlayer.position, n) === 'SB'
-  if (openTo / hand.bigBlind < (openerIsSB ? 2.6 : RFI_MIN_BB)) return null
+  const sizing = GAMES[gameKind(hand.gameType)].sizing
+  if (openTo / hand.bigBlind < (openerIsSB ? sizing.blindOpen : sizing.open)) return null
   if (potType === '3BP') {
     const tb = vol[1]
     const potBefore3bet = computeHandState(hand, hand.actions.indexOf(tb) - 1).pot
@@ -198,9 +201,10 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
 
   const oopCards = cardsOf(oopSeat), ipCards = cardsOf(ipSeat)
   const ok = flop.length === 3
-  const flopKlass = (c: ParsedCard[] | null) => (c && ok ? classifyFlop(c, flop) : undefined)
-  const turnKlass = (c: ParsedCard[] | null) => (c && ok && turnCard ? classifyBoard(c, [...flop, turnCard]) : undefined)
-  const riverKlass = (c: ParsedCard[] | null) => (c && ok && turnCard && riverCard ? classifyBoard(c, [...flop, turnCard, riverCard]) : undefined)
+  const game = gameKind(hand.gameType)
+  const flopKlass = (c: ParsedCard[] | null) => (c && ok ? classifyFlop(c, flop, game) : undefined)
+  const turnKlass = (c: ParsedCard[] | null) => (c && ok && turnCard ? classifyBoard(c, [...flop, turnCard], game) : undefined)
+  const riverKlass = (c: ParsedCard[] | null) => (c && ok && turnCard && riverCard ? classifyBoard(c, [...flop, turnCard, riverCard], game) : undefined)
   const turnBoard = turnCard ? [...flop, turnCard] : null
   const riverBoard = turnCard && riverCard ? [...flop, turnCard, riverCard] : null
   return {

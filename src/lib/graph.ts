@@ -1,6 +1,7 @@
 import type { ParsedHand, ParsedCard } from './types'
 import { computeHandState } from './computeHandState'
 import { showdownEquities } from './equity'
+import { gameKind } from './games'
 
 // ---------------------------------------------------------------------------
 // Results graph: hero's BB won/lost over hands, plus winrate, all-in adjusted
@@ -55,7 +56,7 @@ export function handStat(hand: ParsedHand): { net: number; adjNet: number; rake:
     const folded = new Set(acts.filter(a => a.type === 'fold').map(a => a.seatNumber!))
     const live = [...dealt].filter(s => !folded.has(s))
     const holeOf = (seat: number) => acts.find(a => a.type === 'deal_hole' && a.seatNumber === seat)?.cards ?? null
-    const omaha = /OMAHA/i.test(hand.gameType)
+    const omaha = gameKind(hand.gameType) === 'plo'  // PLO uses 2-of-4; NLHE best-5-of-7
     const size = omaha ? 4 : 2
     const holes = live.map(holeOf)
 

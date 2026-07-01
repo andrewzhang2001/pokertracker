@@ -77,7 +77,10 @@ async function ensureTable() {
   `
   // 'hu' vs 'sixmax' — keeps heads-up and 6-max reports on separate tracks.
   await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS table_kind text`
-  await sql`CREATE INDEX IF NOT EXISTS preflop_spots_lookup ON preflop_spots (table_kind, report_type, pos_a, pos_b, is_hero)`
+  // 'plo' vs 'nlhe' — a second dimension parallel to table_kind. Backfilled rows
+  // predate this column; treat NULL as 'plo'.
+  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS game text`
+  await sql`CREATE INDEX IF NOT EXISTS preflop_spots_lookup ON preflop_spots (game, table_kind, report_type, pos_a, pos_b, is_hero)`
   await sql`CREATE INDEX IF NOT EXISTS preflop_spots_hand ON preflop_spots (hand_id)`
 
   // Materialized postflop spots — one slim FlopSpot per heads-up hand, so the
@@ -108,6 +111,8 @@ async function ensureTable() {
       spot           jsonb NOT NULL
     )
   `
+  // 'plo' vs 'nlhe' — reserved for NLHE postflop (a later milestone); NULL = 'plo'.
+  await sql`ALTER TABLE flop_spots ADD COLUMN IF NOT EXISTS game text`
   await sql`CREATE INDEX IF NOT EXISTS flop_spots_formation ON flop_spots (formation_id)`
 }
 
@@ -133,15 +138,14 @@ async function handler(req: Request): Promise<Response> {
       // the report tiles. `hero` = the viewer's own spots; `pop` = the field's.
       if (view === 'reports') {
         const grid = await sql`
-          SELECT s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action,
+          SELECT COALESCE(s.game, 'plo') AS game, s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action,
             sum(CASE WHEN s.is_hero AND s.owner_id = ${ownerId} THEN 1 ELSE 0 END)::int AS hero,
             sum(CASE WHEN NOT s.is_hero THEN 1 ELSE 0 END)::int AS pop
           FROM preflop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE s.stack_bb >= 75 AND s.key_stack_bb >= 75
-            AND h.game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
-          GROUP BY s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action
+          GROUP BY COALESCE(s.game, 'plo'), s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action
         `
         return Response.json({ grid })
       }
@@ -152,20 +156,23 @@ async function handler(req: Request): Promise<Response> {
         const type = params.get('type'), posA = params.get('pos_a')
         const posB = params.get('pos_b') // null for rfi / limpiso
         const kind = params.get('kind') === 'hu' ? 'hu' : 'sixmax'
+        const game = params.get('game') === 'nlhe' ? 'nlhe' : 'plo'
+        const combo = params.get('combo') // optional: drill to one grid cell
         const subject = params.get('subject') === 'hero' ? 'hero' : 'population'
         const rows = await sql`
           SELECT parsed, raw_text, notes
           FROM hands
           WHERE id IN (
             SELECT s.hand_id FROM preflop_spots s
-            WHERE s.table_kind = ${kind} AND s.report_type = ${type} AND s.pos_a = ${posA}
+            WHERE COALESCE(s.game, 'plo') = ${game}
+              AND s.table_kind = ${kind} AND s.report_type = ${type} AND s.pos_a = ${posA}
               AND (${posB}::text IS NULL OR s.pos_b = ${posB})
+              AND (${combo}::text IS NULL OR s.combo = ${combo})
               AND s.stack_bb >= 75 AND s.key_stack_bb >= 75
               AND (CASE WHEN ${subject} = 'hero'
                         THEN s.is_hero AND s.owner_id = ${ownerId}
                         ELSE NOT s.is_hero END)
           )
-            AND game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR played_at < ${dTo}::bigint)
           ORDER BY played_at DESC NULLS LAST, created_at DESC
@@ -176,10 +183,16 @@ async function handler(req: Request): Promise<Response> {
       // this subset (board texture / line / node / mode are all client-side).
       if (view === 'flop-spots') {
         const formation = params.get('formation')
+        // Population pools every uploader's spots (the client keeps only non-hero
+        // decisions); hero mode must be YOUR hands only, else another uploader's
+        // hero seat would read as yours.
+        const heroMode = params.get('mode') === 'hero'
+        const game = params.get('game') === 'nlhe' ? 'nlhe' : 'plo'
         const rows = await sql`
           SELECT s.spot FROM flop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE s.formation_id = ${formation}
-            AND h.game_type NOT ILIKE '%holdem%'
+            AND (${heroMode}::boolean = false OR s.owner_id = ${ownerId})
+            AND COALESCE(s.game, 'plo') = ${game}
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
         ` as { spot: unknown }[]
@@ -194,11 +207,12 @@ async function handler(req: Request): Promise<Response> {
         const yn = (k: string) => { const v = params.get(k); return v === 'yes' ? true : v === 'no' ? false : null }
         const ranks = (k: string) => { const v = params.get(k); return v ? v.split(',') : null }
         const heroMode = params.get('mode') === 'hero'
+        const game = params.get('game') === 'nlhe' ? 'nlhe' : 'plo'
         const rows = await sql`
           SELECT s.formation_id, count(*)::int AS total
           FROM flop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE (${heroMode}::boolean = false OR (s.owner_id = ${ownerId} AND (s.oop_is_hero OR s.ip_is_hero)))
-            AND h.game_type NOT ILIKE '%holdem%'
+            AND COALESCE(s.game, 'plo') = ${game}
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
             AND (${su('suits')}::text   IS NULL OR s.flop_suits  = ${su('suits')} OR (${su('suits')} = 'fd' AND s.flop_suits = 'dfd'))
@@ -225,12 +239,17 @@ async function handler(req: Request): Promise<Response> {
         const rows = await sql`SELECT id, parsed, raw_text, notes FROM hands WHERE id = ANY(${ids}::text[])`
         return Response.json({ hands: rows })
       }
-      // Lightweight graph feed: YOUR own result numbers, oldest first.
+      // Lightweight graph feed: YOUR own result numbers, oldest first. Optional
+      // game filter (plo/nlhe) via the HOLDEM/OMAHA game_type; absent = all games.
       if (view === 'graph') {
+        const game = params.get('game') // 'plo' | 'nlhe' | null (all)
         const rows = await sql`
           SELECT played_at, net_bb, adj_net_bb, rake_bb
           FROM hands
           WHERE net_bb IS NOT NULL AND owner_id = ${ownerId}
+            AND (${game}::text IS NULL
+                 OR (${game} = 'nlhe' AND game_type ILIKE '%holdem%')
+                 OR (${game} = 'plo'  AND game_type NOT ILIKE '%holdem%'))
           ORDER BY played_at ASC NULLS LAST, created_at ASC
         `
         return Response.json({ rows })
@@ -304,10 +323,10 @@ async function handler(req: Request): Promise<Response> {
         if (spots.length) {
           await sql`
             INSERT INTO preflop_spots (
-              hand_id, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, owner_id
+              hand_id, game, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, owner_id
             )
             SELECT x.*, ${ownerId} FROM jsonb_to_recordset(${JSON.stringify(spots)}::jsonb) AS x(
-              hand_id text, table_kind text, report_type text, pos_a text, pos_b text, multiway boolean,
+              hand_id text, game text, table_kind text, report_type text, pos_a text, pos_b text, multiway boolean,
               combo text, action text, is_hero boolean, stack_bb numeric, key_stack_bb numeric
             )
           `
@@ -322,13 +341,13 @@ async function handler(req: Request): Promise<Response> {
         if (flopSpots.length) {
           await sql`
             INSERT INTO flop_spots (
-              hand_id, formation_id, pot_type, oop_pos, ip_pos, oop_is_hero, ip_is_hero,
+              hand_id, game, formation_id, pot_type, oop_pos, ip_pos, oop_is_hero, ip_is_hero,
               flop_suits, flop_paired, flop_straighty, flop_high, flop_mid, flop_low,
               turn_suits, turn_paired, turn_straighty, river_suits, river_paired, river_straighty,
               spot, owner_id
             )
             SELECT x.*, ${ownerId} FROM jsonb_to_recordset(${JSON.stringify(flopSpots)}::jsonb) AS x(
-              hand_id text, formation_id text, pot_type text, oop_pos text, ip_pos text,
+              hand_id text, game text, formation_id text, pot_type text, oop_pos text, ip_pos text,
               oop_is_hero boolean, ip_is_hero boolean,
               flop_suits text, flop_paired boolean, flop_straighty boolean,
               flop_high text, flop_mid text, flop_low text,

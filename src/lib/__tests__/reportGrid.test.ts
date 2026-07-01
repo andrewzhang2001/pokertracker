@@ -10,6 +10,7 @@ import {
 } from '../reports'
 import { spotsForHand } from '../canonicalSpots'
 import { tableKind, type TableKind } from '../positionUtils'
+import { gameKind } from '../games'
 import type { ParsedHand } from '../types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -25,10 +26,10 @@ function gridFromHands(hs: ParsedHand[]): ReportGridRow[] {
   for (const h of hs) {
     for (const s of spotsForHand(h)) {
       if (s.stack_bb < MIN_BB || s.key_stack_bb < MIN_BB) continue // matches SQL WHERE
-      const key = `${s.table_kind}|${s.report_type}|${s.pos_a}|${s.pos_b}|${s.multiway}|${s.combo}|${s.action}`
+      const key = `${s.game}|${s.table_kind}|${s.report_type}|${s.pos_a}|${s.pos_b}|${s.multiway}|${s.combo}|${s.action}`
       let row = map.get(key)
       if (!row) {
-        row = { table_kind: s.table_kind, report_type: s.report_type, pos_a: s.pos_a, pos_b: s.pos_b, multiway: s.multiway, combo: s.combo, action: s.action, hero: 0, pop: 0 }
+        row = { game: s.game, table_kind: s.table_kind, report_type: s.report_type, pos_a: s.pos_a, pos_b: s.pos_b, multiway: s.multiway, combo: s.combo, action: s.action, hero: 0, pop: 0 }
         map.set(key, row)
       }
       if (s.is_hero) row.hero++; else row.pop++
@@ -99,16 +100,17 @@ describe('buildReportFromGrid matches buildReport', () => {
     ...SELS_HU.map(sel => ({ sel, kind: 'hu' as TableKind })),
   ]
   for (const { sel, kind } of cases) {
-    // buildReport doesn't filter by table kind, so feed it only this kind's hands
-    // (the app does the same via the kind-scoped report-hands endpoint).
-    const kHands = hands.filter(h => tableKind(h.players.length) === kind)
+    // buildReport doesn't filter by table kind or game, so feed it only this
+    // kind's PLO hands (the app does the same via the kind/game-scoped report-hands
+    // endpoint; buildReportFromGrid filters game itself, defaulting to 'plo').
+    const kHands = hands.filter(h => tableKind(h.players.length) === kind && gameKind(h.gameType) === 'plo')
     for (const subject of subjects) {
       const solverless = sel.type === 'limpiso' || kind === 'hu'
       const slv = solverless ? undefined : solver
       const name = `${kind} · ${JSON.stringify(sel)} · ${subject}`
       test(name, () => {
         const fromHands = buildReport(kHands, sel, slv, subject, kind)
-        const fromGrid = buildReportFromGrid(grid, sel, slv, subject, kind)
+        const fromGrid = buildReportFromGrid(grid, sel, slv, subject, kind, 'plo')
         sameResult(fromHands, fromGrid)
       })
     }

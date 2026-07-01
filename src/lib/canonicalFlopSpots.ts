@@ -1,4 +1,5 @@
 import type { ParsedHand } from './types'
+import { gameKind, type GameKind } from './games'
 import { extractFlopSpot, FORMATIONS, type FlopSpot } from './postflop'
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ import { extractFlopSpot, FORMATIONS, type FlopSpot } from './postflop'
 // jsonb_to_recordset without remapping (same convention as canonicalHand.ts).
 export interface FlopSpotRow {
   hand_id: string
+  game: GameKind      // 'plo' | 'nlhe' — filters the postflop views by game
   formation_id: string
   pot_type: string
   oop_pos: string
@@ -51,6 +53,7 @@ export function slimFlopSpot(hand: ParsedHand): FlopSpotRow | null {
   const { hand: _omit, ...slim } = spot
   return {
     hand_id: spot.handId,
+    game: gameKind(hand.gameType),
     formation_id: formationId,
     pot_type: spot.potType,
     oop_pos: spot.oopPos,

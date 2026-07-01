@@ -1,5 +1,6 @@
 import type { ParsedHand, ParsedCard } from './types'
 import { displayPosition, type TableKind } from './positionUtils'
+import { gameKind, GAMES, type GameKind } from './games'
 import { ploCombo } from './ploCombo'
 
 // ---------------------------------------------------------------------------
@@ -20,16 +21,17 @@ const ACT_ORDER = ['UTG', 'UTG+1', 'UTG+2', 'UTG+3', 'UTG+4', 'LJ', 'HJ', 'CO', 
 const orderIndex = (pos: string) => ACT_ORDER.indexOf(pos)
 
 export const MIN_BB = 75            // depth filter: the acting player's starting stack
-export const RFI_OPEN_MIN_BB = 3.0  // a raise must be >= this to count as an RFI
-export const THREEBET_MIN_BB = 10.0 // a re-raise must be >= this to count as a real 3-bet
-// Blind-vs-blind (incl. heads-up) runs much smaller — opens cap ~3bb and 3-bets
-// ~9bb — so the standard 3bb/10bb gates reject every BvB 3-bet. The SB is the
-// only opener that's a blind (folded-to-SB = BvB; in HU the button normalizes to
-// SB too), so an SB opener flags the small-sizing regime for both formats.
-export const BVB_OPEN_MIN_BB = 2.6  // a "reasonable" BvB open (filters tiny min-raises)
-export const BVB_THREEBET_MIN_BB = 7.5
-const openMinFor = (openerPos: string) => (openerPos === 'SB' ? BVB_OPEN_MIN_BB : RFI_OPEN_MIN_BB)
-const threebetMinFor = (openerPos: string) => (openerPos === 'SB' ? BVB_THREEBET_MIN_BB : THREEBET_MIN_BB)
+// Raise-size gates come from the per-game config (GAMES in ./games). The SB is
+// the only opener that's a blind (folded-to-SB = BvB; in HU the button normalizes
+// to SB), so an SB opener selects the looser blind floor for both formats.
+const openMinFor = (openerPos: string, game: GameKind) => {
+  const s = GAMES[game].sizing
+  return openerPos === 'SB' ? s.blindOpen : s.open
+}
+const threebetMinFor = (openerPos: string, game: GameKind) => {
+  const s = GAMES[game].sizing
+  return openerPos === 'SB' ? s.blindThreebet : s.threebet
+}
 
 // Whose decisions a report covers.
 export type Subject = 'population' | 'hero' | 'all'
@@ -227,6 +229,7 @@ export interface VsRfiSpot {
 
 export function vsRfiSpots(hand: ParsedHand, minOpenBB?: number): VsRfiSpot[] {
   const tableSize = hand.players.length
+  const game = gameKind(hand.gameType)
   const playerBy = (seat: number) => hand.players.find(p => p.seatNumber === seat)
 
   let openerPos: string | null = null
@@ -244,7 +247,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB?: number): VsRfiSpot[] {
         const p = playerBy(a.seatNumber)
         if (!p) return []
         const pos = displayPosition(p.position, tableSize)
-        if ((a.amount ?? 0) / hand.bigBlind < (minOpenBB ?? openMinFor(pos))) return [] // open too small to count as RFI
+        if ((a.amount ?? 0) / hand.bigBlind < (minOpenBB ?? openMinFor(pos, game))) return [] // open too small to count as RFI
         openerPos = pos
         openerStackBB = p.startingStack / hand.bigBlind
         continue
@@ -328,6 +331,7 @@ export interface Vs3betSpot {
 
 export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: number): Vs3betSpot[] {
   const tableSize = hand.players.length
+  const game = gameKind(hand.gameType)
   const playerBy = (seat: number) => hand.players.find(p => p.seatNumber === seat)
 
   let phase: 'open' | 'threebet' | 'response' = 'open'
@@ -344,7 +348,7 @@ export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: nu
       if (a.type === 'fold') continue
       if (a.type === 'raise') {
         const pos = displayPosition(p.position, tableSize)
-        if ((a.amount ?? 0) / hand.bigBlind < (minOpenBB ?? openMinFor(pos))) return [] // open too small
+        if ((a.amount ?? 0) / hand.bigBlind < (minOpenBB ?? openMinFor(pos, game))) return [] // open too small
         openerSeat = a.seatNumber
         openerPos = pos
         openerStackBB = p.startingStack / hand.bigBlind
@@ -356,7 +360,7 @@ export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: nu
     if (phase === 'threebet') {
       if (a.type === 'fold') continue
       if (a.type === 'raise' || a.type === 'allin') {
-        if ((a.amount ?? 0) / hand.bigBlind < (min3betBB ?? threebetMinFor(openerPos))) return [] // 3-bet too small to count
+        if ((a.amount ?? 0) / hand.bigBlind < (min3betBB ?? threebetMinFor(openerPos, game))) return [] // 3-bet too small to count
         threeBettorPos = displayPosition(p.position, tableSize)
         threeBettorStackBB = p.startingStack / hand.bigBlind
         phase = 'response'; continue
@@ -419,7 +423,6 @@ export function vs3betReport(
 // No GTO baseline exists for limped pots, so this report is frequency-only.
 // ===========================================================================
 export type LimpIsoAction = 'raise' | 'call' | 'fold'
-export const ISO_MIN_BB = 3.0   // an iso raise must be ≥ this (a real raise over the limps)
 const LIMP_POSITIONS = ['LJ', 'HJ', 'CO', 'BU']  // who counts as a limper (no blinds)
 
 // IP/OOP is the iso-raiser relative to the limper by POSTFLOP action order.
@@ -441,8 +444,9 @@ export interface LimpIsoSpot {
   action: LimpIsoAction
 }
 
-export function limpVsIsoSpots(hand: ParsedHand, minIsoBB = ISO_MIN_BB): LimpIsoSpot[] {
+export function limpVsIsoSpots(hand: ParsedHand, minIsoBB?: number): LimpIsoSpot[] {
   const tableSize = hand.players.length
+  const isoMin = minIsoBB ?? GAMES[gameKind(hand.gameType)].sizing.iso
   const playerBy = (seat: number) => hand.players.find(p => p.seatNumber === seat)
 
   let phase: 'limp' | 'response' = 'limp'
@@ -470,7 +474,7 @@ export function limpVsIsoSpots(hand: ParsedHand, minIsoBB = ISO_MIN_BB): LimpIso
       }
       if (a.type === 'raise' || a.type === 'allin') {
         if (limperSeats.length === 0) return []      // a raise with no limps in front = RFI, not an iso
-        if ((a.amount ?? 0) / hand.bigBlind < minIsoBB) return [] // not a real iso
+        if ((a.amount ?? 0) / hand.bigBlind < isoMin) return [] // not a real iso
         isoPos = displayPosition(p.position, tableSize)
         isoStackBB = p.startingStack / hand.bigBlind
         multiway = limperSeats.length >= 2
@@ -613,13 +617,14 @@ export function leakProfile(axes: EvSummary['axes']): { label: string; nickname:
   return { label: [t, a].filter(Boolean).join('-') || '≈ GTO', nickname }
 }
 
-function subtitle(kind: ReportKind, subject: Subject): string {
+function subtitle(kind: ReportKind, subject: Subject, game: GameKind): string {
   const who = subject === 'hero' ? 'your hands' : 'population · excludes you'
   const base = `${who} · ${MIN_BB}bb+`
+  const s = GAMES[game].sizing
   return kind === 'rfi' ? `${base} · unopened pots`
-    : kind === 'vsrfi' ? `${base} · vs a single ≥${RFI_OPEN_MIN_BB}bb open`
-    : kind === 'vs3bet' ? `${base} · open then vs a single ≥${THREEBET_MIN_BB}bb 3-bet`
-    : `${base} · limped pot, original limper vs a ≥${ISO_MIN_BB}bb iso`
+    : kind === 'vsrfi' ? `${base} · vs a single ≥${s.open}bb open`
+    : kind === 'vs3bet' ? `${base} · open then vs a single ≥${s.threebet}bb 3-bet`
+    : `${base} · limped pot, original limper vs a ≥${s.iso}bb iso`
 }
 
 // Bucket specs per report kind — the single source of truth shared by both the
@@ -648,7 +653,7 @@ const REPORT_SPECS: Record<ReportKind, BucketSpec[]> = {
   ],
 }
 
-const reportTitle = (sel: ReportSel): string =>
+export const reportTitle = (sel: ReportSel): string =>
   sel.type === 'rfi' ? `${POSITION_NAMES[sel.pos]} RFI`
     : sel.type === 'vsrfi' ? `${POSITION_NAMES[sel.defender]} vs ${POSITION_NAMES[sel.opener]} RFI`
     : sel.type === 'vs3bet' ? `${POSITION_NAMES[sel.opener]} vs ${vs3betTagLabel(sel.tag)} 3-bet`
@@ -666,21 +671,21 @@ export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: Solver
   const title = huTitle(sel, tableKind)
   if (sel.type === 'rfi') {
     const r = rfiReport(hands, { position: sel.pos, minBB: MIN_BB, subject })
-    return assemble('rfi', title, subtitle('rfi', subject), r, REPORT_SPECS.rfi, solver)
+    return assemble('rfi', title, subtitle('rfi', subject, 'plo'), r, REPORT_SPECS.rfi, solver)
   }
   if (sel.type === 'vsrfi') {
     const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, subject })
-    return assemble('vsrfi', title, subtitle('vsrfi', subject), r, REPORT_SPECS.vsrfi, solver)
+    return assemble('vsrfi', title, subtitle('vsrfi', subject, 'plo'), r, REPORT_SPECS.vsrfi, solver)
   }
   if (sel.type === 'limpiso') {
     const r = limpVsIsoReport(hands, { iso: sel.iso, multiway: sel.multiway, minBB: MIN_BB, subject })
     return {
-      ...assemble('limpiso', title, subtitle('limpiso', subject) + mwSuffix(sel.multiway), r, REPORT_SPECS.limpiso),
+      ...assemble('limpiso', title, subtitle('limpiso', subject, 'plo') + mwSuffix(sel.multiway), r, REPORT_SPECS.limpiso),
       solverless: true,
     }
   }
   const r = vs3betReport(hands, { opener: sel.opener, tag: sel.tag, minBB: MIN_BB, subject })
-  return assemble('vs3bet', title, subtitle('vs3bet', subject), r, REPORT_SPECS.vs3bet, solver)
+  return assemble('vs3bet', title, subtitle('vs3bet', subject, 'plo'), r, REPORT_SPECS.vs3bet, solver)
 }
 
 // ===========================================================================
@@ -691,6 +696,7 @@ export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: Solver
 // fetches that report's hands and uses buildReport for the populated lists.
 // ===========================================================================
 export interface ReportGridRow {
+  game: GameKind
   table_kind: TableKind
   report_type: string
   pos_a: string
@@ -765,11 +771,14 @@ function assembleFromCounts(
   return { title, subtitle, total, buckets, ev }
 }
 
-export function buildReportFromGrid(
-  rows: ReportGridRow[], sel: ReportSel, solver: SolverTable | undefined, subject: Subject, tableKind: TableKind,
-): ReportResult {
-  const kind = sel.type
+// combo (null = cards unknown) -> action -> count, over the grid rows that match a
+// report SEL for the selected game / format / subject. Shared by the aggregate
+// report and the NLHE 13×13 grid.
+export function gridComboCounts(
+  rows: ReportGridRow[], sel: ReportSel, subject: Subject, tableKind: TableKind, game: GameKind,
+): Map<string | null, Map<string, number>> {
   const match = (r: ReportGridRow): boolean => {
+    if (r.game !== game) return false
     if (r.table_kind !== tableKind) return false
     if (r.report_type !== sel.type) return false
     if (sel.type === 'rfi') return r.pos_a === sel.pos
@@ -781,7 +790,6 @@ export function buildReportFromGrid(
     return true
   }
   const pick = (r: ReportGridRow) => subject === 'hero' ? r.hero : subject === 'population' ? r.pop : r.hero + r.pop
-
   const comboCounts = new Map<string | null, Map<string, number>>()
   for (const r of rows) {
     if (!match(r)) continue
@@ -791,9 +799,30 @@ export function buildReportFromGrid(
     if (!am) { am = new Map(); comboCounts.set(r.combo, am) }
     am.set(r.action, (am.get(r.action) ?? 0) + n)
   }
+  return comboCounts
+}
 
-  const solverless = sel.type === 'limpiso'
-  const sub = subtitle(kind, subject) + (sel.type === 'limpiso' ? mwSuffix(sel.multiway) : '')
+// Per-combo action counts keyed by the (non-null) combo string — the 13×13 grid's
+// per-cell data. e.g. { AA: { raise: 9, fold: 1 }, AKs: {...} }.
+export function comboActionMap(
+  rows: ReportGridRow[], sel: ReportSel, subject: Subject, tableKind: TableKind, game: GameKind,
+): Map<string, Record<string, number>> {
+  const out = new Map<string, Record<string, number>>()
+  for (const [combo, am] of gridComboCounts(rows, sel, subject, tableKind, game)) {
+    if (!combo) continue
+    out.set(combo, Object.fromEntries(am))
+  }
+  return out
+}
+
+export function buildReportFromGrid(
+  rows: ReportGridRow[], sel: ReportSel, solver: SolverTable | undefined, subject: Subject, tableKind: TableKind, game: GameKind = 'plo',
+): ReportResult {
+  const kind = sel.type
+  const comboCounts = gridComboCounts(rows, sel, subject, tableKind, game)
+  // Frequency-only when there's no GTO baseline: limp-iso, or a game with no solver (NLHE).
+  const solverless = sel.type === 'limpiso' || !GAMES[game].hasSolver
+  const sub = subtitle(kind, subject, game) + (sel.type === 'limpiso' ? mwSuffix(sel.multiway) : '')
   const res = assembleFromCounts(kind, huTitle(sel, tableKind), sub, comboCounts, REPORT_SPECS[kind], solverless ? undefined : solver)
   return solverless ? { ...res, solverless: true } : res
 }
