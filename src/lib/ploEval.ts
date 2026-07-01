@@ -13,7 +13,8 @@ import type { GameKind } from './games'
 export type MadeCategory =
   | 'straight flush' | 'quads' | 'full house' | 'flush' | 'straight'
   | 'trips' | 'set' | 'two pair'
-  | 'overpair' | 'top pair' | 'middle pair' | 'bottom pair' | 'pocket pair'
+  | 'overpair' | 'top pair' | 'middle pair' | 'bottom pair' | 'pocket pair'  // PLO pair ladder
+  | 'underpair' | '2nd pair' | '3rd pair' | 'weak pair' | 'A-hi' | 'K-hi'      // Hold'em ladder
 export type DrawType = 'flush draw' | 'wrap' | 'OESD' | 'gutshot'
 
 // `sub` = the fine subcategory for the postflop dropdowns: a nut/tier split of the
@@ -95,6 +96,7 @@ export function classifyFlop(hole: ParsedCard[], flop: ParsedCard[], game: GameK
 
 // Classify a hole against a 3- to 5-card board (flop/turn/river).
 export function classifyBoard(hole: ParsedCard[], board: ParsedCard[], game: GameKind = 'plo'): HandClass {
+  if (game === 'nlhe') return classifyHoldem(hole, board)  // separate ladder / no fine subcategories
   const best = bestCategory(hole, board, game)
 
   // rank/suit tallies
@@ -136,28 +138,23 @@ export function classifyBoard(hole: ParsedCard[], board: ParsedCard[], game: Gam
   else if (best === 4) made = 'straight'
   else if (best === 3) {
     made = setOrTrips()
-    // PLO only: trips entirely on the board (e.g. A-J on J666) are shared — you
-    // can't use the board's third card with just one hole card, so demote to the
-    // real holding (top pair). Hold'em plays the board trips, so it keeps them.
-    if (game === 'plo' && made === 'trips' && boardVals.some(v => brc[v] >= 3)) made = pairSubtype()
+    // Trips entirely on the board (e.g. A-J on J666) are shared — you can't use the
+    // board's third card with just one hole card, so demote to the real holding
+    // (top pair). A set, or trips made with a hole card on a paired board, stays.
+    if (made === 'trips' && boardVals.some(v => brc[v] >= 3)) made = pairSubtype()
   }
-  // PLO only: a "two pair" whose second pair is just the paired board (JAT9/99/AA
-  // on J33, KK65 on 622) is shared — PLO spends both hole cards, so it can't also
-  // borrow the board pair. Hold'em CAN play the board pair (Kx on KQQ = two pair),
-  // so it keeps best===2 as genuine two pair.
-  else if (best === 2) made = (game === 'nlhe' || matchedPairs() >= 2) ? 'two pair' : pairSubtype()
+  // A "two pair" whose second pair is just the paired board (JAT9/99/AA on J33,
+  // KK65 on 622) is shared — PLO spends both hole cards, so it can't also borrow
+  // the board pair. Only a genuine two pair (two hole cards pairing two board
+  // ranks) stays.
+  else if (best === 2) made = matchedPairs() >= 2 ? 'two pair' : pairSubtype()
   else if (best === 1) made = pairSubtype()
 
   // draws (only if they'd improve on the made hand; meaningless once the board is complete)
   const draws: DrawType[] = []
   const canDraw = board.length < 5
   if (canDraw && best < 5) {
-    // PLO needs 2 of a suit in hand + 2 on board; Hold'em just needs 4 total to a
-    // flush across hole+board (so 1 hole + 3 board also draws).
-    for (const s of Object.keys(hsuit)) {
-      const draw = game === 'nlhe' ? hsuit[s] + (bsuit[s] || 0) === 4 : hsuit[s] >= 2 && (bsuit[s] || 0) === 2
-      if (draw) { draws.push('flush draw'); break }
-    }
+    for (const s of Object.keys(hsuit)) if (hsuit[s] >= 2 && (bsuit[s] || 0) === 2) { draws.push('flush draw'); break }
   }
   if (canDraw && best < 4) {
     let completing = 0
@@ -230,6 +227,95 @@ export function classifyBoard(hole: ParsedCard[], board: ParsedCard[], game: Gam
   const DRAW_TAG_CATS = new Set<MadeCategory>(['flush', 'straight', 'set', 'trips', 'two pair', 'overpair', 'top pair', 'middle pair', 'bottom pair', 'pocket pair'])
   if (made && DRAW_TAG_CATS.has(made) && drawTag) sub = `${sub} · ${drawTag}`
 
+  const parts = [made, ...draws].filter(Boolean) as string[]
+  return { made, draws, sub, label: parts.length ? parts.join(', ') : 'air' }
+}
+
+// ---------------------------------------------------------------------------
+// Hold'em classifier. Made hands use best-5-of-7 (the board plays), but PAIRS are
+// bucketed by a strategic ladder relative to the board's UNPAIRED cards — a board
+// pair/trips is shared (you only stand out by holding it for trips, or by your own
+// pair). So on J886, 77 is an UNDERPAIR (beats 6x = 2nd pair; the 88 is shared and
+// anyone holding an 8 has trips). Ladder, strongest → weakest:
+//   overpair > top pair > underpair > 2nd pair > 3rd pair > weak pair
+// then the no-pair buckets A-hi / K-hi / air (draws bucket as 'draw'). Deliberately
+// no fine subcategories (sub == the category) — not needed in Hold'em.
+// ---------------------------------------------------------------------------
+const HOLDEM_LADDER_IDX: Record<string, number> = {
+  overpair: 0, 'top pair': 1, underpair: 2, '2nd pair': 3, '3rd pair': 4, 'weak pair': 5,
+}
+function classifyHoldem(hole: ParsedCard[], board: ParsedCard[]): HandClass {
+  const best = bestCategory(hole, board, 'nlhe')
+  const hrc: Record<number, number> = {}, brc: Record<number, number> = {}
+  const hsuit: Record<string, number> = {}, bsuit: Record<string, number> = {}
+  for (const c of hole) { hrc[RV[c.rank]] = (hrc[RV[c.rank]] || 0) + 1; hsuit[c.suit] = (hsuit[c.suit] || 0) + 1 }
+  for (const c of board) { brc[RV[c.rank]] = (brc[RV[c.rank]] || 0) + 1; bsuit[c.suit] = (bsuit[c.suit] || 0) + 1 }
+  const boardVals = [...new Set(board.map(c => RV[c.rank]))].sort((a, b) => b - a)
+  const levels = boardVals.filter(v => brc[v] === 1)   // unpaired board cards, high→low (pairing them = one pair)
+  const [L0, L1, L2] = levels
+
+  const ladderOf = (R: number, isPocket: boolean): MadeCategory => {
+    if (isPocket) {
+      if (L0 === undefined || R > L0) return 'overpair'
+      if (L1 !== undefined && R > L1) return 'underpair'   // between top and 2nd
+      if (L2 !== undefined && R > L2) return '3rd pair'    // between 2nd and 3rd
+      return 'weak pair'
+    }
+    if (R === L0) return 'top pair'
+    if (R === L1) return '2nd pair'
+    if (R === L2) return '3rd pair'
+    return 'weak pair'
+  }
+  // The player's OWN pair (a pocket pair off the board, or a hole card matching an
+  // unpaired board card) → its ladder bucket. null when the only pair is the shared
+  // board pair (player holds neither of its ranks).
+  const pairLadder = (): MadeCategory | null => {
+    let out: MadeCategory | null = null, bi = 99
+    for (const k in hrc) {
+      const R = +k
+      const isPocket = hrc[R] >= 2 && !brc[R]
+      const isMatched = hrc[R] >= 1 && brc[R] === 1
+      if (!isPocket && !isMatched) continue
+      const cat = ladderOf(R, isPocket)
+      if (HOLDEM_LADDER_IDX[cat] < bi) { bi = HOLDEM_LADDER_IDX[cat]; out = cat }
+    }
+    return out
+  }
+  const matchedPairs = (): number => { let n = 0; for (const k in hrc) if (brc[+k] >= 1) n++; return n }
+
+  let made: MadeCategory | null = null
+  if (best === 8) made = 'straight flush'
+  else if (best === 7) made = 'quads'
+  else if (best === 6) made = 'full house'
+  else if (best === 5) made = 'flush'
+  else if (best === 4) made = 'straight'
+  else if (best === 3) {
+    const isSet = Object.keys(hrc).some(r => hrc[+r] >= 2 && brc[+r] >= 1)  // pocket pair hit the board
+    // trips you make by holding one of a board pair are real; board TRIPS you don't
+    // hold is shared → fall to the ladder / high card.
+    made = boardVals.some(v => brc[v] >= 3) && !isSet ? pairLadder() : (isSet ? 'set' : 'trips')
+  }
+  else if (best === 2) made = matchedPairs() >= 2 ? 'two pair' : pairLadder()  // genuine two pair = two own pairs
+  else if (best === 1) made = pairLadder()
+
+  // draws (only while the board can still improve)
+  const draws: DrawType[] = []
+  const canDraw = board.length < 5
+  if (canDraw && best < 5) {
+    for (const s of Object.keys(hsuit)) if (hsuit[s] >= 1 && hsuit[s] + (bsuit[s] || 0) === 4) { draws.push('flush draw'); break }
+  }
+  if (canDraw && best < 4) {
+    let completing = 0
+    for (let R = 2; R <= 14; R++) if (hasStraight(hole, [...board, { rank: VR[R], suit: 'x' as ParsedCard['suit'] }], 'nlhe')) completing++
+    if (completing >= 3) draws.push('wrap')
+    else if (completing === 2) draws.push('OESD')
+    else if (completing === 1) draws.push('gutshot')
+  }
+
+  // no pair of your own (or only a shared board pair) and not drawing → high-card bucket
+  if (!made && !draws.length) made = hrc[14] ? 'A-hi' : hrc[13] ? 'K-hi' : null
+
+  const sub = made ?? (draws.length ? 'draw' : 'air')  // no fine subcategories in Hold'em
   const parts = [made, ...draws].filter(Boolean) as string[]
   return { made, draws, sub, label: parts.length ? parts.join(', ') : 'air' }
 }

@@ -459,9 +459,14 @@ export interface NodeResult {
   handIds: string[]                       // reaching hands (for drill-down — fetched by id)
 }
 
+// Strongest → weakest. Interleaves the PLO ladder (overpair/top/middle/bottom/
+// pocket pair) and the Hold'em ladder (overpair/top/underpair/2nd/3rd/weak pair,
+// then A-hi/K-hi) — each game only ever emits its own set, so the cross-game
+// ordering is cosmetic; both games' internal orders are preserved.
 const CLASS_ORDER = [
   'straight flush', 'quads', 'full house', 'flush', 'straight', 'set', 'trips', 'two pair',
-  'overpair', 'top pair', 'middle pair', 'bottom pair', 'pocket pair', 'draw', 'air',
+  'overpair', 'top pair', 'underpair', '2nd pair', 'middle pair', '3rd pair', 'bottom pair',
+  'weak pair', 'pocket pair', 'A-hi', 'K-hi', 'draw', 'air',
 ]
 const sum = (c: Record<string, number>) => Object.values(c).reduce((a, b) => a + b, 0)
 

@@ -838,18 +838,29 @@ describe('ploEval – flop hand classification', () => {
     expect(cb('Ah 2h 5c 7d', 'Kh 9h 3c Qs').draws).toContain('flush draw')
   })
 
-  test('classifyBoard – Hold\'em plays the board (game=nlhe)', () => {
+  test('classifyBoard – Hold\'em pair ladder (game=nlhe)', () => {
     const nl = (hole: string, board: string) => classifyBoard(C(hole), C(board), 'nlhe').made
     const plo = (hole: string, board: string) => classifyBoard(C(hole), C(board)).made // default 'plo'
-    // paired board: Hold'em plays the board pair (Kx on KQQ = two pair);
-    // PLO can't borrow the board pair with one hole card → just top pair.
-    expect(nl('Kh 2c', 'Ks Qd Qc')).toBe('two pair')
-    expect(plo('Kh 2c 5d 7s', 'Ks Qd Qc')).toBe('top pair')
-    // board flush on the turn: Hold'em makes it with ONE hole card; PLO needs two.
+    // unpaired flop K Q 7 → levels K (top) / Q (2nd) / 7 (3rd)
+    expect(nl('Ah Ad', 'Ks Qd 7c')).toBe('overpair')    // above top
+    expect(nl('Ah Kd', 'Ks Qd 7c')).toBe('top pair')
+    expect(nl('Ah Qc', 'Ks Qd 7c')).toBe('2nd pair')
+    expect(nl('Ah 7d', 'Ks Qd 7c')).toBe('3rd pair')
+    expect(nl('Jh Jd', 'Ks Qd 7c')).toBe('3rd pair')    // PP between 2nd and 3rd
+    expect(nl('6h 6d', 'Ks Qd 7c')).toBe('weak pair')   // PP below 3rd
+    expect(nl('Ah 2c', 'Ks Qd 7c')).toBe('A-hi')        // no pair / no draw, holds A
+    expect(nl('Kh 2c', 'Qs 8d 3c')).toBe('K-hi')        // no pair / no draw, holds K (no A)
+    // paired board J 8 8 6 → the 8 is shared (hold it = trips); levels J / 6
+    expect(nl('Th Td', 'Js 8d 8c 6h')).toBe('underpair') // TT between J and 6
+    expect(nl('7h 7d', 'Js 8d 8c 6h')).toBe('underpair') // 77 too (the user's example)
+    expect(nl('5h 5d', 'Js 8d 8c 6h')).toBe('weak pair') // below the 6
+    expect(nl('Ah 6d', 'Js 8d 8c 6h')).toBe('2nd pair')  // pairs the 6
+    expect(nl('8h Tc', 'Js 8d 8c 6h')).toBe('trips')     // holds an 8
+    expect(nl('Jh 6c', 'Js 8d 8c 6h')).toBe('two pair')  // genuine two pair (J and 6)
+    expect(nl('Ah 2c', 'Js 8d 8c 6h')).toBe('A-hi')      // only the shared board pair → A-hi
+    // best-5-of-7 still plays the board for real hands (flush with one hole card)
     expect(nl('Ah 2c', 'Kh Qh 7h 3h')).toBe('flush')
-    // board trips stay trips for Hold'em (plays the board); PLO shares them away.
-    expect(nl('Ah 2c', '6h 6d 6s Kc')).toBe('trips')
-    // PLO default is unchanged by the new game param (exactly-2 flush).
+    // PLO default unchanged by the game param
     expect(plo('Ah 2h 5c 7d', 'Kh 9h 3c Qh')).toBe('flush')
   })
 })
