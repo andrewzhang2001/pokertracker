@@ -138,6 +138,7 @@ async function handler(req: Request): Promise<Response> {
             sum(CASE WHEN NOT s.is_hero THEN 1 ELSE 0 END)::int AS pop
           FROM preflop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE s.stack_bb >= 75 AND s.key_stack_bb >= 75
+            AND h.game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
           GROUP BY s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action
@@ -164,6 +165,7 @@ async function handler(req: Request): Promise<Response> {
                         THEN s.is_hero AND s.owner_id = ${ownerId}
                         ELSE NOT s.is_hero END)
           )
+            AND game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR played_at < ${dTo}::bigint)
           ORDER BY played_at DESC NULLS LAST, created_at DESC
@@ -177,6 +179,7 @@ async function handler(req: Request): Promise<Response> {
         const rows = await sql`
           SELECT s.spot FROM flop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE s.formation_id = ${formation}
+            AND h.game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
         ` as { spot: unknown }[]
@@ -195,15 +198,16 @@ async function handler(req: Request): Promise<Response> {
           SELECT s.formation_id, count(*)::int AS total
           FROM flop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE (${heroMode}::boolean = false OR (s.owner_id = ${ownerId} AND (s.oop_is_hero OR s.ip_is_hero)))
+            AND h.game_type NOT ILIKE '%holdem%'
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
-            AND (${su('suits')}::text   IS NULL OR s.flop_suits      = ${su('suits')})
+            AND (${su('suits')}::text   IS NULL OR s.flop_suits  = ${su('suits')} OR (${su('suits')} = 'fd' AND s.flop_suits = 'dfd'))
             AND (${yn('paired')}::boolean IS NULL OR s.flop_paired   = ${yn('paired')})
             AND (${yn('straight')}::boolean IS NULL OR s.flop_straighty = ${yn('straight')})
-            AND (${su('tsuits')}::text  IS NULL OR s.turn_suits      = ${su('tsuits')})
+            AND (${su('tsuits')}::text  IS NULL OR s.turn_suits  = ${su('tsuits')} OR (${su('tsuits')} = 'fd' AND s.turn_suits = 'dfd'))
             AND (${yn('tpaired')}::boolean IS NULL OR s.turn_paired  = ${yn('tpaired')})
             AND (${yn('tstraight')}::boolean IS NULL OR s.turn_straighty = ${yn('tstraight')})
-            AND (${su('rsuits')}::text  IS NULL OR s.river_suits     = ${su('rsuits')})
+            AND (${su('rsuits')}::text  IS NULL OR s.river_suits = ${su('rsuits')} OR (${su('rsuits')} = 'fd' AND s.river_suits = 'dfd'))
             AND (${yn('rpaired')}::boolean IS NULL OR s.river_paired = ${yn('rpaired')})
             AND (${yn('rstraight')}::boolean IS NULL OR s.river_straighty = ${yn('rstraight')})
             AND (${ranks('fh')}::text[] IS NULL OR s.flop_high = ANY(${ranks('fh')}))

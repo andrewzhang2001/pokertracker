@@ -11,7 +11,13 @@ const STREET_KEYS: Record<Street, { suit: keyof PostflopFilter; straight: keyof 
   river: { suit: 'riverSuits', straight: 'riverStraight', paired: 'riverPaired' },
 }
 
-const SUIT_OPTS: [string, string][] = [['any', 'suit —'], ['rainbow', 'rainbow'], ['twotone', 'two-tone'], ['mono', 'mono']]
+// Suit texture options by flush potential — street-specific (double flush draw
+// only on the turn; the river is just flush vs no-flush since draws can't complete).
+const SUIT_OPTS: Record<Street, [string, string][]> = {
+  flop: [['any', 'suit —'], ['nofd', 'no fd'], ['fd', 'flush draw'], ['flush', 'flush']],
+  turn: [['any', 'suit —'], ['nofd', 'no fd'], ['fd', 'flush draw'], ['dfd', 'double fd'], ['flush', 'flush']],
+  river: [['any', 'suit —'], ['nofd', 'no flush'], ['flush', 'flush']],
+}
 const PAIR_OPTS: [string, string][] = [['any', 'pair —'], ['yes', 'paired'], ['no', 'unpaired']]
 const STR_OPTS: [string, string][] = [['any', 'str —'], ['yes', 'straight'], ['no', 'no straight']]
 
@@ -90,7 +96,7 @@ export function StreetFilters({ filter, onChange, street }: {
   const set = (key: keyof PostflopFilter) => (v: string) => onChange({ [key]: v } as Partial<PostflopFilter>)
   return (
     <div className="flex items-center gap-1 text-xs text-gray-400">
-      <Sel value={filter[k.suit] as string} onChange={set(k.suit)} opts={SUIT_OPTS} />
+      <Sel value={filter[k.suit] as string} onChange={set(k.suit)} opts={SUIT_OPTS[street]} />
       <Sel value={filter[k.straight] as string} onChange={set(k.straight)} opts={STR_OPTS} />
       <Sel value={filter[k.paired] as string} onChange={set(k.paired)} opts={PAIR_OPTS} />
       {street === 'flop' && <FlopCards filter={filter} onChange={onChange} />}

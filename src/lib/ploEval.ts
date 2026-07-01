@@ -222,3 +222,21 @@ export function classifyBoard(hole: ParsedCard[], board: ParsedCard[]): HandClas
   const parts = [made, ...draws].filter(Boolean) as string[]
   return { made, draws, sub, label: parts.length ? parts.join(', ') : 'air' }
 }
+
+// Canonical order for a subcategory row within its made-category dropdown:
+// strongest tier first (nut → 2nd → other), then draw precedence
+// (flush draw > straight draw > fd blocker > none).
+const TIER_RANK: Record<string, number> = {
+  'nut flush': 0, 'second nut flush': 1, 'other flush': 2,
+  'straight': 0, 'second nut straight': 1, 'other straight': 2,
+  'top set': 0, 'middle set': 1, 'bottom set': 2,
+  'nut trips': 0, 'non-nut trips': 1,
+  'top two pair': 0, 'two pair w/ TP': 1, 'other two pair': 2,
+  'full house': 0, 'non-nut full house': 1,
+  'nut flush draw': 0, 'other flush draw': 1, wrap: 2, OESD: 3, gutshot: 4,
+}
+const DRAW_RANK: Record<string, number> = { 'flush draw': 0, 'straight draw': 1, 'fd blocker': 2 }
+export function subRank(sub: string): number {
+  const [base, draw] = sub.split(' · ')
+  return (TIER_RANK[base] ?? 0) * 10 + (draw ? (DRAW_RANK[draw] ?? 3) : 3)
+}

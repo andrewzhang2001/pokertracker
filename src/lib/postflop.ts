@@ -1,7 +1,7 @@
 import type { ParsedHand, ParsedCard, HandAction } from './types'
 import { displayPosition, type TableKind } from './positionUtils'
 import { computeHandState } from './computeHandState'
-import { classifyFlop, classifyBoard, type HandClass } from './ploEval'
+import { classifyFlop, classifyBoard, subRank, type HandClass } from './ploEval'
 
 // ---------------------------------------------------------------------------
 // Postflop scenario engine. A SCENARIO is one of YOUR decision nodes in the
@@ -22,16 +22,25 @@ const THREEBET_MIN_POT = 0.75 // the 3-bet must be ~pot-sized (no tiny 3-bets)
 
 export const RANKS_DESC = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
 
-export type SuitTexture = 'mono' | 'twotone' | 'rainbow'
+// Suit texture by flush potential (what a 2-suited hole can make):
+//   flush = a suit with 3+ on board (hole 2 → made flush)
+//   dfd   = two suits with exactly 2 (two flush draws) — turn/river only
+//   fd    = one suit with exactly 2 (a flush draw)
+//   nofd  = no flush draw. On the RIVER draws can't complete, so it's only
+//           flush vs nofd (a lone 2-suit river = no flush).
+export type SuitTexture = 'nofd' | 'fd' | 'dfd' | 'flush'
 export interface FlopTexture { suits: SuitTexture; paired: boolean }
 export function flopTexture(flop: ParsedCard[]): FlopTexture {
   return { suits: boardSuits(flop), paired: boardPaired(flop) }
 }
-// Suit texture by distinct-suit count (generalizes across flop/turn/river):
-// 1 = mono, 2 = two-tone, 3+ = rainbow.
 export function boardSuits(board: ParsedCard[]): SuitTexture {
-  const n = new Set(board.map(c => c.suit)).size
-  return n === 1 ? 'mono' : n === 2 ? 'twotone' : 'rainbow'
+  const cnt: Record<string, number> = {}
+  for (const c of board) cnt[c.suit] = (cnt[c.suit] || 0) + 1
+  const counts = Object.values(cnt)
+  if (counts.some(n => n >= 3)) return 'flush'
+  if (board.length >= 5) return 'nofd'                       // river: flush vs no flush only
+  const twos = counts.filter(n => n === 2).length
+  return twos >= 2 ? 'dfd' : twos === 1 ? 'fd' : 'nofd'
 }
 // A board is "paired" if any rank repeats among its cards.
 export const boardPaired = (board: ParsedCard[]): boolean => new Set(board.map(c => c.rank)).size < board.length
@@ -463,10 +472,21 @@ const streamOf = (s: FlopSpot, node: NodeDef) =>
 const inStreetPath = (node: NodeDef) =>
   node.street === 'flop' ? node.path : node.street === 'turn' ? (node.turnPath ?? []) : (node.riverPath ?? [])
 const decisionIndex = (node: NodeDef) => inStreetPath(node).length
-const classOf = (s: FlopSpot, node: NodeDef) =>
-  node.street === 'flop' ? (node.acting === 'oop' ? s.oopClass : s.ipClass)
-    : node.street === 'turn' ? (node.acting === 'oop' ? s.oopTurnClass : s.ipTurnClass)
-    : (node.acting === 'oop' ? s.oopRiverClass : s.ipRiverClass)
+// A given actor's hand class at the node's street.
+const classFor = (s: FlopSpot, node: NodeDef, actor: FlopActor) =>
+  node.street === 'flop' ? (actor === 'oop' ? s.oopClass : s.ipClass)
+    : node.street === 'turn' ? (actor === 'oop' ? s.oopTurnClass : s.ipTurnClass)
+    : (actor === 'oop' ? s.oopRiverClass : s.ipRiverClass)
+const classOf = (s: FlopSpot, node: NodeDef) => classFor(s, node, node.acting)
+
+// Bet the hero faces = the action right before their decision.
+export type BetBucket = 'all' | 'sm' | 'md' | 'lg'
+const sizeBucketOf = (p?: number): BetBucket | null => (p === undefined ? null : p < 0.4 ? 'sm' : p <= 0.7 ? 'md' : 'lg')
+const facedBetPct = (s: FlopSpot, node: NodeDef): number | undefined => {
+  const di = decisionIndex(node)
+  const a = di > 0 ? streamOf(s, node)[di - 1] : undefined
+  return a && (a.type === 'bet' || a.type === 'raise') ? a.betPct : undefined
+}
 
 // Does a spot reach this node, with the right player on the clock?
 function reaches(s: FlopSpot, node: NodeDef): boolean {
@@ -511,7 +531,7 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
   }
   const rows = CLASS_ORDER.filter(k => top.has(k)).map(k => {
     const t = top.get(k)!
-    const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => b.total - a.total)
+    const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => subRank(a.label) - subRank(b.label))
     return { key: k, counts: t.counts, sizes: t.sizes, total: sum(t.counts), sub }
   })
   return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, handIds: reaching.map(s => s.handId) }
@@ -549,7 +569,7 @@ export const EMPTY_FILTER: PostflopFilter = {
 // Filter ⇆ URL query (so board filters survive drill-down / back / refresh).
 export function parseFilter(q: URLSearchParams): PostflopFilter {
   const yn = (v: string | null): YesNoAny => (v === 'yes' || v === 'no' ? v : 'any')
-  const su = (v: string | null): SuitFilter => (['rainbow', 'twotone', 'mono'] as const).includes(v as SuitTexture) ? (v as SuitTexture) : 'any'
+  const su = (v: string | null): SuitFilter => (['nofd', 'fd', 'dfd', 'flush'] as const).includes(v as SuitTexture) ? (v as SuitTexture) : 'any'
   const ranks = (v: string | null) => (v ? v.split(',').filter(r => RANKS_DESC.includes(r)) : [])
   return {
     suits: su(q.get('suits')), paired: yn(q.get('paired')), straight: yn(q.get('straight')),
@@ -583,7 +603,9 @@ export function extractSpots(hands: ParsedHand[]): FlopSpot[] {
 // (cond === undefined) an active yes/no filter excludes the spot.
 const matchYN = (v: YesNoAny, cond: boolean | undefined) =>
   v === 'any' || (cond !== undefined && cond === (v === 'yes'))
-const matchSuit = (v: SuitFilter, t: SuitTexture | undefined) => v === 'any' || t === v
+// `fd` is the superset of flush-draw boards, so it also matches double-flush-draw.
+const matchSuit = (v: SuitFilter, t: SuitTexture | undefined) =>
+  v === 'any' || t === v || (v === 'fd' && t === 'dfd')
 const matchRank = (sel: string[], rank: string | undefined) =>
   sel.length === 0 || (rank !== undefined && sel.includes(rank))
 
@@ -640,21 +662,50 @@ function deriveNodes(node: NodeDef): { heroNode: NodeDef; prior?: NodeDef; respo
   return { heroNode: node, prior, responses }
 }
 
+// The RANGE the hero faces: the opponent's hand-class composition over the spots
+// reaching the node, strongest→weakest (only classified/showdown hands).
+export interface RangeComp { rows: { key: string; count: number }[]; total: number; handIds: string[] }
+function rangeComposition(spots: FlopSpot[], node: NodeDef, actor: FlopActor): RangeComp {
+  const counts = new Map<string, number>()
+  const handIds: string[] = []
+  let total = 0
+  for (const s of spots) {
+    if (!reaches(s, node)) continue
+    handIds.push(s.handId)
+    const hc = classFor(s, node, actor)
+    if (!hc) continue
+    const key = hc.made ?? (hc.draws.length ? 'draw' : 'air')
+    counts.set(key, (counts.get(key) || 0) + 1); total++
+  }
+  return { rows: CLASS_ORDER.filter(k => counts.has(k)).map(k => ({ key: k, count: counts.get(k)! })), total, handIds }
+}
+
+// Does this node's decision face a bet/raise (vs a check / being first to act)?
+export function nodeFacesBet(node: NodeDef): boolean {
+  const sp = inStreetPath(node)
+  const last = sp[sp.length - 1]
+  return !!last && (last.type === 'bet' || last.type === 'raise')
+}
+
 export interface ScenarioReport {
   heroNode: NodeResult
   prior?: NodeResult
   responses: NodeResult[]
+  facedRange?: RangeComp   // the villain range you're facing (composition), when facing an action
   // hands reaching your node, with YOUR cards/class
   listSpots: { spot: FlopSpot; action: FlopActType; betPct?: number; cards: ParsedCard[] | null; klass?: HandClass }[]
 }
 
 export function formationReport(
-  spots: FlopSpot[], formationId: string, nodeId: string, mode: PostflopMode, filter: PostflopFilter,
+  spots: FlopSpot[], formationId: string, nodeId: string, mode: PostflopMode, filter: PostflopFilter, facedBet: BetBucket = 'all',
 ): ScenarioReport {
   const formation = FORMATIONS.find(f => f.id === formationId) ?? FORMATIONS[0]
   const node = NODE_BY_ID.get(nodeId) ?? NODES[0]
-  const base = filterFormation(spots, formation, filter)
+  let base = filterFormation(spots, formation, filter)
   const { heroNode, prior, responses } = deriveNodes(node)
+  // Bet-size filter: keep only hands where the bet you face is that size, so the
+  // preceding/decision/response panels all narrow to that size together.
+  if (facedBet !== 'all') base = base.filter(s => reaches(s, node) && sizeBucketOf(facedBetPct(s, node)) === facedBet)
 
   // Per-DECISION subject: in 'hero' mode the acting player is you; in
   // 'population' mode it's anyone but you (so we keep opponents' decisions even
@@ -673,6 +724,8 @@ export function formationReport(
     heroNode: nodeBreakdown(heroSpots, heroNode),
     prior: prior ? nodeBreakdown(villainSpots, prior) : undefined,
     responses: responses.map(r => nodeBreakdown(villainSpots, r)),
+    // The range you face = the opponent's cards over the spots reaching your node.
+    facedRange: prior ? rangeComposition(base, node, villSeat) : undefined,
     listSpots,
   }
 }

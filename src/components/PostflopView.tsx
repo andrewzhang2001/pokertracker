@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
-  formationReport, FORMATIONS, getNode, nodeLabel, parseFilter, writeFilter,
-  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets,
+  formationReport, FORMATIONS, getNode, nodeLabel, nodeFacesBet, parseFilter, writeFilter,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp,
 } from '../lib/postflop'
 import type { HandClass } from '../lib/ploEval'
 import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
@@ -77,6 +77,13 @@ function StackedBar({ counts, sizes, segments }: { counts: Record<string, number
 
 export type Sel = { made: string; sub?: string }
 
+// Drop the redundant parent-category prefix from a sub-row label under its row —
+// e.g. "overpair · flush draw" under the overpair row shows just "flush draw",
+// and the plain "overpair" sub shows "no draw". Tier labels (top set, nut flush)
+// are kept as-is.
+const subLabel = (rowKey: string, sub: string) =>
+  sub === rowKey ? 'no draw' : sub.startsWith(rowKey + ' · ') ? sub.slice(rowKey.length + 3) : sub
+
 function NodeChart({ node, onView, selected, onSelect }: {
   node: NodeResult; onView?: () => void; selected?: Sel | null; onSelect?: (s: Sel) => void
 }) {
@@ -89,8 +96,8 @@ function NodeChart({ node, onView, selected, onSelect }: {
     <div className="mb-4">
       <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 flex justify-between items-baseline">
         <span>{node.label}</span>
-        <span className="text-gray-600 normal-case" title={segs.map(s => `${s.key} ${node.actionCounts[s.key] || 0}`).join(' · ')}>
-          {segs.map((s, i) => <span key={s.key}>{i > 0 && <span className="text-gray-600">/</span>}<span className={actionText(s.key)}>{node.actionCounts[s.key] || 0}</span></span>)} <span className="text-gray-600">· {node.total}</span>
+        <span className="text-gray-600 normal-case" title={segs.map(s => `${s.key} ${node.actionCounts[s.key] || 0} (${Math.round((node.actionCounts[s.key] || 0) / (node.total || 1) * 100)}%)`).join(' · ')}>
+          {segs.map((s, i) => <span key={s.key}>{i > 0 && <span className="text-gray-600">/</span>}<span className={actionText(s.key)}>{Math.round((node.actionCounts[s.key] || 0) / (node.total || 1) * 100)}</span></span>)} <span className="text-gray-600">· {node.total}</span>
         </span>
       </div>
       {node.rows.length === 0 ? <p className="text-gray-600 text-xs">no sample</p> : (
@@ -100,17 +107,20 @@ function NodeChart({ node, onView, selected, onSelect }: {
             const isOpen = open.has(row.key)
             return (
               <div key={row.key}>
-                <button onClick={() => { if (expandable) toggle(row.key); onSelect?.({ made: row.key }) }}
-                  className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 ${onSelect || expandable ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'} ${rowSel(row.key) ? 'bg-yellow-500/15 ring-1 ring-yellow-500/40' : ''}`}>
-                  <span className="w-3 text-gray-500">{expandable ? (isOpen ? '▾' : '▸') : ''}</span>
-                  <span className="w-24 text-gray-300 text-left truncate">{row.key}</span>
-                  <StackedBar counts={row.counts} sizes={row.sizes} segments={segs} />
-                  <span className="w-8 text-right text-gray-500">{row.total}</span>
-                </button>
+                {/* caret = expand · body = filter (one action per click) */}
+                <div className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 ${rowSel(row.key) ? 'bg-yellow-500/15 ring-1 ring-yellow-500/40' : ''}`}>
+                  <button onClick={() => expandable && toggle(row.key)} className={`w-3 shrink-0 text-gray-500 ${expandable ? 'cursor-pointer hover:text-white' : 'cursor-default'}`}>{expandable ? (isOpen ? '▾' : '▸') : ''}</button>
+                  <button onClick={() => (onSelect ? onSelect({ made: row.key }) : expandable && toggle(row.key))}
+                    className={`flex-1 flex items-center gap-2 min-w-0 rounded ${onSelect || expandable ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'}`}>
+                    <span className="w-36 text-gray-300 text-left truncate">{row.key}</span>
+                    <StackedBar counts={row.counts} sizes={row.sizes} segments={segs} />
+                    <span className="w-8 text-right text-gray-500">{row.total}</span>
+                  </button>
+                </div>
                 {isOpen && row.sub.map(s => {
                   const inner = (
                     <>
-                      <span className="w-3" /><span className="w-24 text-gray-500 text-left truncate" title={s.label}>{s.label}</span>
+                      <span className="w-3" /><span className="w-32 text-gray-500 text-left truncate" title={s.label}>{subLabel(row.key, s.label)}</span>
                       <StackedBar counts={s.counts} sizes={s.sizes} segments={segs} />
                       <span className="w-8 text-right text-gray-600">{s.total}</span>
                     </>
@@ -136,6 +146,38 @@ function NodeChart({ node, onView, selected, onSelect }: {
   )
 }
 
+// The range you're facing: hand-class composition (bar = combos relative to the
+// range) with a cumulative % from the strongest class down.
+function FacingRange({ comp, barColor, onView }: { comp: RangeComp; barColor: string; onView?: () => void }) {
+  const total = comp.total || 1
+  const maxCount = Math.max(1, ...comp.rows.map(r => r.count)) // normalize bars to the biggest class
+  let running = 0
+  const rows = comp.rows.map(row => { running += row.count; return { ...row, cum: running / total } })
+  return (
+    <div className="mb-4">
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">range you're facing <span className="text-gray-600 normal-case">· {comp.total} shown</span></div>
+      {rows.length === 0 ? <p className="text-gray-600 text-xs">no showdowns in sample</p> : (
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-[10px] text-gray-600"><span className="w-36" /><span className="flex-1">combos</span><span className="w-8 text-right">n</span><span className="w-10 text-right">top%</span></div>
+          {rows.map(row => (
+            <div key={row.key} className="flex items-center gap-2 text-xs">
+              <span className="w-36 text-gray-300 text-left truncate" title={row.key}>{row.key}</span>
+              <div className="flex-1 h-3 rounded bg-gray-800/80 overflow-hidden" title={`${Math.round((row.count / total) * 100)}% of range`}>
+                <div className={`h-full ${barColor}`} style={{ width: `${(row.count / maxCount) * 100}%` }} />
+              </div>
+              <span className="w-8 text-right text-gray-500">{row.count}</span>
+              <span className="w-10 text-right text-gray-400">{Math.round(row.cum * 100)}%</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {onView && comp.handIds.length > 0 && (
+        <button onClick={onView} className="mt-1 text-xs text-blue-400 hover:text-blue-300">▶ Review these {comp.handIds.length} hands</button>
+      )}
+    </div>
+  )
+}
+
 export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, onOpenHands, onBack }: Props) {
   const init = readState()
   const [mode, setMode] = useState<PostflopMode>(init.mode)
@@ -151,7 +193,11 @@ export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, 
   // is computed client-side. Drill-down resolves hand ids on demand.
   const [spots, setSpots] = useState<FlopSpot[]>([])
   useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo)).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo])
-  const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter), [spots, formationId, nodeId, mode, filter])
+  // Bet-size filter (only when facing a bet): narrows all panels to that faced size.
+  const facesBet = node ? nodeFacesBet(node) : false
+  const [facedBet, setFacedBet] = useState<BetBucket>('all')
+  useEffect(() => { setFacedBet('all') }, [nodeId, formationId])
+  const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter, facesBet ? facedBet : 'all'), [spots, formationId, nodeId, mode, filter, facesBet, facedBet])
   const openHands = async (ids: string[], index: number) => onOpenHands(await fetchHandsByIds(ids), index)
 
   // Click a category/subcategory in your decision chart to filter the hands list.
@@ -185,6 +231,16 @@ export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, 
             </button>
           ))}
         </div>
+        {facesBet && (
+          <div className="flex items-center gap-1 text-xs text-gray-500">
+            <span>facing</span>
+            <div className="flex rounded-full border border-gray-700 overflow-hidden">
+              {([['all', 'all'], ['sm', '<40%'], ['md', '40–70%'], ['lg', '>70%']] as [BetBucket, string][]).map(([b, l]) => (
+                <button key={b} onClick={() => setFacedBet(b)} className={`px-2.5 py-1 transition-colors ${facedBet === b ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>{l}</button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="ml-auto">
           <PostflopFilters filter={filter} onChange={set} />
         </div>
@@ -192,11 +248,20 @@ export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, 
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-4">
         <div className="flex gap-6 max-w-7xl mx-auto items-start flex-wrap">
-          {/* Left: preceding villain action (population) */}
-          {r.prior && (
-            <div className="w-72 shrink-0">
-              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">← Preceding (villain, pop)</div>
-              <NodeChart node={r.prior} onView={() => openHands(r.prior!.handIds, 0)} />
+          {/* Left: the villain range you're facing (composition, not their action).
+              Bar color: green vs a check, red vs a bet, or the size color when a
+              specific faced size is selected (<40 yellow / 40–70 orange / >70 red). */}
+          {r.facedRange && (
+            <div className="w-80 shrink-0">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">← Facing (villain)</div>
+              <FacingRange
+                comp={r.facedRange}
+                barColor={!facesBet ? 'bg-green-600/70'
+                  : facedBet === 'sm' ? 'bg-yellow-500/80'
+                  : facedBet === 'md' ? 'bg-orange-500/80'
+                  : 'bg-red-500/75'}
+                onView={() => openHands(r.facedRange!.handIds, 0)}
+              />
             </div>
           )}
 
@@ -238,7 +303,7 @@ export default function PostflopView({ formationId, nodeId, monthFrom, monthTo, 
 
           {/* Right: resulting villain responses (population) */}
           {r.responses.length > 0 && (
-            <div className="w-72 shrink-0">
+            <div className="w-80 shrink-0">
               <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Resulting (villain, pop) →</div>
               {r.responses.map((n, i) => <NodeChart key={i} node={n} onView={() => openHands(n.handIds, 0)} />)}
             </div>

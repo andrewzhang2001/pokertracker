@@ -857,9 +857,9 @@ describe('postflop – BB vs flop c-bet spot', () => {
   }
 
   test('flopTexture & connectivity', () => {
-    expect(flopTexture(C('As Ks Qs'))).toEqual({ suits: 'mono', paired: false })
-    expect(flopTexture(C('Ah Kh 2d'))).toEqual({ suits: 'twotone', paired: false })
-    expect(flopTexture(C('As Ad Kc'))).toEqual({ suits: 'rainbow', paired: true })
+    expect(flopTexture(C('As Ks Qs'))).toEqual({ suits: 'flush', paired: false }) // 3 suited → flush
+    expect(flopTexture(C('Ah Kh 2d'))).toEqual({ suits: 'fd', paired: false })    // 2 suited → flush draw
+    expect(flopTexture(C('As Ad Kc'))).toEqual({ suits: 'nofd', paired: true })   // no 2-suit → no fd
     expect(straightPossibleFlop(C('6s 5h 4d'))).toBe(true)   // 654
     expect(straightPossibleFlop(C('Ts 9h 8d'))).toBe(true)   // T98
     expect(straightPossibleFlop(C('Qs 6h 3d'))).toBe(false)  // Q63 — span 9, no straight
@@ -881,11 +881,15 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(boardPaired(C('Ah Kd 2c'))).toBe(false)
     expect(boardPaired(C('Ah Kd 2c Ks'))).toBe(true)              // turn pairs the K
     expect(boardPaired(C('Ah Kd 2c 7s 9h'))).toBe(false)
-    // suit texture by distinct-suit count, scaling with the board
-    expect(boardSuits(C('As Ks Qs'))).toBe('mono')
-    expect(boardSuits(C('As Ks Qs 2s'))).toBe('mono')
-    expect(boardSuits(C('As Ks Qs 2h'))).toBe('twotone')
-    expect(boardSuits(C('As Kh Qd'))).toBe('rainbow')
+    // suit texture by flush potential, scaling with the board
+    expect(boardSuits(C('As Ks Qs'))).toBe('flush')          // flop: 3 suited
+    expect(boardSuits(C('As Ks Qs 2s'))).toBe('flush')       // turn: 4 suited
+    expect(boardSuits(C('As Ks Qs 2h'))).toBe('flush')       // turn: 3 suited → still a flush
+    expect(boardSuits(C('As Kh Qd'))).toBe('nofd')           // flop: rainbow
+    expect(boardSuits(C('Ah Kh 2s 3s'))).toBe('dfd')         // turn: two 2-suits → double flush draw
+    expect(boardSuits(C('Ah Kh 2s 3d'))).toBe('fd')          // turn: one 2-suit → flush draw
+    expect(boardSuits(C('As Ks 2h 3d 4c'))).toBe('nofd')     // river: lone 2-suit = no flush
+    expect(boardSuits(C('As Ks Qs 2h 3d'))).toBe('flush')    // river: 3 suited = flush
   })
 
 
@@ -918,8 +922,8 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(r.prior!.total).toBe(3)              // all three checked to the IP raiser
     expect(r.responses[0].total).toBe(1)        // only xr reaches "vs your check-raise"
     expect(r.listSpots.length).toBe(2)
-    // texture filter (rainbow board) excludes monotone
-    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { ...EMPTY_FILTER, suits: 'mono' }).heroNode.total).toBe(0)
+    // texture filter (no-flush-draw board) excludes a flush-board filter
+    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { ...EMPTY_FILTER, suits: 'flush' }).heroNode.total).toBe(0)
   })
 
   test('formationReport: 3BP OOP first-to-act with villain response nodes', () => {
