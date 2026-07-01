@@ -1,9 +1,11 @@
 import { useMemo, useState, useEffect } from 'react'
-import type { ParsedHand } from '../lib/types'
 import {
-  extractSpots, formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel, lineSeq, parseFilter, writeFilter,
-  type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
+  formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel, lineSeq, parseFilter, writeFilter,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
 } from '../lib/postflop'
+import { fetchFlopSpots, fetchFlopCounts } from '../lib/handsApi'
+import type { TableKind } from '../lib/positionUtils'
+import { KindToggle } from './KindToggle'
 import { StreetFilters } from './PostflopFilters'
 
 // Mode + board filters + selected formation live in the URL query.
@@ -20,7 +22,8 @@ function readState() {
 }
 
 interface Props {
-  hands: ParsedHand[]
+  kind: TableKind
+  onKind: (k: TableKind) => void
   onOpen: (formationId: string, nodeId: string) => void
   onBack: () => void
 }
@@ -101,21 +104,30 @@ function NodeRow({ label, sub, cells, pfa, onOpen }: {
   )
 }
 
-export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
+export default function PostflopMenu({ kind, onKind, onOpen, onBack }: Props) {
   const init = readState()
+  const formations = FORMATIONS.filter(f => f.kind === kind)
   const [formationId, setFormationId] = useState(init.formationId)
+  // Keep the selected formation within the active kind (6-max ⇄ heads-up).
+  useEffect(() => {
+    if (!formations.some(f => f.id === formationId)) setFormationId(formations[0].id)
+  }, [kind]) // eslint-disable-line react-hooks/exhaustive-deps
   const [lineId, setLineId] = useState(init.lineId)
   const [turnLineId, setTurnLineId] = useState(init.turnLineId)
   const [mode, setMode] = useState<PostflopMode>(init.mode)
   const [filter, setFilter] = useState<PostflopFilter>(init.filter)
   const pfa = (FORMATIONS.find(f => f.id === formationId) ?? FORMATIONS[0]).pfa
 
-  const spots = useMemo(() => extractSpots(hands), [hands])
-  // Spot count per formation (for the selector bubbles) + the selected tree.
-  const counts = useMemo(
-    () => new Map(FORMATIONS.map(f => [f.id, formationTree(spots, f.id, mode, filter).total])),
-    [spots, mode, filter],
-  )
+  // Only the selected formation's spots are loaded; the tree (texture/line/node/
+  // mode) is then computed client-side. Switching formation refetches.
+  const [spots, setSpots] = useState<FlopSpot[]>([])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId])
+
+  // Per-formation sample counts (the selector bubbles) come from the server under
+  // the active board filter + mode.
+  const [counts, setCounts] = useState<Record<string, number>>({})
+  useEffect(() => { let live = true; fetchFlopCounts(mode, filter).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter])
+
   const tree = useMemo(() => formationTree(spots, formationId, mode, filter), [spots, formationId, mode, filter])
   // Order lines most-passive → most-aggressive (by first action): check-check,
   // then check-bet-call, then bet-call.
@@ -139,6 +151,7 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-gray-800 text-sm flex-wrap">
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <span className="text-white font-semibold">Postflop</span>
+        <KindToggle kind={kind} onChange={onKind} />
         <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
           {(['hero', 'population'] as PostflopMode[]).map(m => (
             <button key={m} onClick={() => setMode(m)} className={`px-3 py-1 transition-colors ${mode === m ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
@@ -155,7 +168,7 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
             {(['SRP', '3BP'] as const).map(pot => (
               <div key={pot} className="flex flex-wrap items-center gap-2">
                 <span className="w-10 shrink-0 text-xs uppercase tracking-wide text-gray-600">{pot}</span>
-                {FORMATIONS.filter(f => f.potType === pot).map(f => {
+                {formations.filter(f => f.potType === pot).map(f => {
                   const active = f.id === formationId
                   return (
                     <button
@@ -166,7 +179,7 @@ export default function PostflopMenu({ hands, onOpen, onBack }: Props) {
                         : 'border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-500'}`}
                     >
                       {f.label}
-                      <span className={`ml-2 text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{counts.get(f.id) ?? 0}</span>
+                      <span className={`ml-2 text-xs ${active ? 'text-yellow-400/70' : 'text-gray-600'}`}>{counts[f.id] ?? 0}</span>
                     </button>
                   )
                 })}

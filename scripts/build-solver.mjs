@@ -86,4 +86,24 @@ for (const [opener, tag, source] of VS3BET) {
   console.log(`vs3bet/${opener.toLowerCase()}-${tag}.json  (${n} combos)`); total++
 }
 
+// Heads-up: a single SB(button) vs BB matchup — simpler tree, no position
+// subdirs. Output public/solver/hu/{rfi,vsrfi,vs3bet}.json with the same action
+// layouts as 6-max (rfi: [fold,raise]; vsrfi/vs3bet: [fold,call,raise]).
+const HU_SRC = resolve(SRC, '../../heads up/100bb')
+if (existsSync(HU_SRC)) {
+  const huTable = (sub, files, name) => {
+    const dir = resolve(HU_SRC, sub)
+    if (!existsSync(dir)) { console.warn('skip hu', sub); return }
+    const maps = files.map(f => loadAction(resolve(dir, `${f}.json`)))
+    const pot = maps[maps.length - 1] // POT is always last → its keys are the in-range combos
+    const n = writeTable(resolve(root, 'public/solver/hu', `${name}.json`), [...pot.keys()], maps)
+    console.log(`hu/${name}.json  (${n} combos)`); total++
+  }
+  huTable('RFI', ['FOLD', 'POT'], 'rfi')          // SB open
+  huTable('vs RFI', ['FOLD', 'CALL', 'POT'], 'vsrfi')   // BB vs SB open
+  huTable('vs 3-bet', ['FOLD', 'CALL', 'POT'], 'vs3bet') // SB vs BB 3-bet
+} else {
+  console.warn('skip HU — not found at', HU_SRC)
+}
+
 console.log(`\nDone. ${total} tables written to public/solver/`)

@@ -1,21 +1,121 @@
 import type { ParsedHand } from './types'
 import { canonicalizeHand, rowToParsedHand } from './canonicalHand'
+import { spotsForHand } from './canonicalSpots'
+import { slimFlopSpot } from './canonicalFlopSpots'
 import type { GraphRow } from './graph'
+import type { ReportGridRow, ReportSel } from './reports'
+import type { FlopSpot, PostflopFilter, PostflopMode } from './postflop'
+import { writeFilter } from './postflop'
+import type { TableKind } from './positionUtils'
 import { authHeaders } from './auth'
 
-// Export every parsed hand to the database (bulk, idempotent upsert by hand id).
-// Notes are aligned by index with the hands array. The server stamps each row
-// with the signed-in account (owner) from the bearer token.
-export async function exportHandsToDb(hands: ParsedHand[], notes: string[]): Promise<number> {
-  const rows = hands.map((h, i) => canonicalizeHand(h, notes[i]))
-  const res = await fetch('/api/hands', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
-    body: JSON.stringify({ hands: rows }),
-  })
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Export failed')
-  const { inserted } = await res.json() as { inserted: number }
-  return inserted
+// Hands per POST. The whole batch is one JSON body; Vercel caps request bodies
+// at 4.5 MB, and a canonical hand row (parsed + analysis + raw_text) is several
+// KB, so we chunk to stay well under the limit — a single 46k-hand POST would be
+// hundreds of MB and rejected outright.
+export const EXPORT_CHUNK = 250
+
+// Running tally of an export, surfaced to the UI for a live progress indicator.
+export interface ExportProgress {
+  done: number        // hands processed so far
+  total: number       // hands to process
+  added: number       // newly inserted
+  duplicate: number   // already existed (upsert-updated)
+  failed: number      // hands in a chunk that errored out
+}
+
+// Export every parsed hand to the database in chunks (bulk, idempotent upsert by
+// hand id). Each chunk carries its hands AND their materialized preflop/flop
+// spots so the reports stay in sync. Notes are aligned by index with the hands
+// array. The server stamps each row with the signed-in account from the token.
+//
+// A failed chunk (network/DB error) does NOT abort the whole export — its hands
+// are counted as `failed` and the run continues, so one bad batch can't strand a
+// 6k-hand upload. onProgress fires after each chunk with running totals.
+export async function exportHandsToDb(
+  hands: ParsedHand[],
+  notes: string[],
+  onProgress?: (p: ExportProgress) => void,
+): Promise<ExportProgress> {
+  const total = hands.length
+  let added = 0, duplicate = 0, failed = 0
+  for (let i = 0; i < hands.length; i += EXPORT_CHUNK) {
+    const slice = hands.slice(i, i + EXPORT_CHUNK)
+    try {
+      const handRows = slice.map((h, j) => canonicalizeHand(h, notes[i + j]))
+      const spotRows = slice.flatMap(spotsForHand)
+      const flopRows = slice.map(slimFlopSpot).filter((r): r is NonNullable<typeof r> => r !== null)
+      const res = await fetch('/api/hands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+        body: JSON.stringify({ hands: handRows, spots: spotRows, flopSpots: flopRows }),
+      })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Export failed')
+      const r = await res.json() as { added?: number; updated?: number; inserted: number }
+      added += r.added ?? r.inserted
+      duplicate += r.updated ?? 0
+    } catch {
+      failed += slice.length
+    }
+    onProgress?.({ done: Math.min(i + EXPORT_CHUNK, total), total, added, duplicate, failed })
+  }
+  return { done: total, total, added, duplicate, failed }
+}
+
+// The compact per-combo report grid (one GROUP BY over preflop_spots). Drives
+// every report tile without shipping the hand pool to the browser.
+export async function fetchReportGrid(): Promise<ReportGridRow[]> {
+  const res = await fetch('/api/hands?view=reports', { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load reports')
+  const data = await res.json() as { grid?: ReportGridRow[] }
+  return data.grid ?? []
+}
+
+// Hands for ONE report's drill-down — only those with a qualifying spot, so the
+// detail view can re-derive populated bucket lists with buildReport cheaply.
+export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const p = new URLSearchParams({ view: 'report-hands', subject, kind })
+  if (sel.type === 'rfi') { p.set('type', 'rfi'); p.set('pos_a', sel.pos) }
+  else if (sel.type === 'vsrfi') { p.set('type', 'vsrfi'); p.set('pos_a', sel.defender); p.set('pos_b', sel.opener) }
+  else if (sel.type === 'vs3bet') { p.set('type', 'vs3bet'); p.set('pos_a', sel.opener); p.set('pos_b', sel.tag) }
+  else { p.set('type', 'limpiso'); p.set('pos_a', sel.iso) }
+  const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
+  const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string; notes: string | null }[] }
+  return {
+    hands: data.hands.map(rowToParsedHand),
+    notes: data.hands.map(r => r.notes ?? ''),
+  }
+}
+
+// One formation's slim postflop spots — the browser runs the node-walk over
+// these (board texture / line / node / mode all stay client-side). `hand` is
+// omitted; drill-down resolves it via fetchHandsByIds.
+export async function fetchFlopSpots(formationId: string): Promise<FlopSpot[]> {
+  const res = await fetch(`/api/hands?view=flop-spots&formation=${encodeURIComponent(formationId)}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load spots')
+  const data = await res.json() as { spots?: FlopSpot[] }
+  return data.spots ?? []
+}
+
+// Per-formation sample counts under the active board filter (postflop menu tiles).
+export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter): Promise<Record<string, number>> {
+  const q = new URLSearchParams({ view: 'flop-counts', mode })
+  writeFilter(q, filter)
+  const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load counts')
+  const data = await res.json() as { counts?: { formation_id: string; total: number }[] }
+  return Object.fromEntries((data.counts ?? []).map(c => [c.formation_id, c.total]))
+}
+
+// Drill-down: resolve hand ids to full ParsedHands, in the requested order.
+export async function fetchHandsByIds(ids: string[]): Promise<ParsedHand[]> {
+  if (!ids.length) return []
+  const res = await fetch(`/api/hands?view=hands-by-id&ids=${ids.map(encodeURIComponent).join(',')}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
+  const data = await res.json() as { hands: { id: string; parsed: Omit<ParsedHand, 'rawText'>; raw_text: string }[] }
+  const byId = new Map(data.hands.map(r => [r.id, rowToParsedHand(r)]))
+  return ids.map(id => byId.get(id)).filter((h): h is ParsedHand => h !== undefined)
 }
 
 // Lightweight graph feed — YOUR precomputed per-hand result numbers (no parsing).

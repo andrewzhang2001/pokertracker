@@ -1,9 +1,10 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
-  extractSpots, formationReport, FORMATIONS, getNode, nodeLabel, parseFilter, writeFilter,
-  type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType,
+  formationReport, FORMATIONS, getNode, nodeLabel, parseFilter, writeFilter,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType,
 } from '../lib/postflop'
+import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
 import PlayingCard from './PlayingCard'
 import PostflopFilters from './PostflopFilters'
 
@@ -19,7 +20,6 @@ function readState() {
 }
 
 interface Props {
-  hands: ParsedHand[]
   formationId: string
   nodeId: string
   onOpenHands: (hands: ParsedHand[], index: number) => void
@@ -92,16 +92,16 @@ function NodeChart({ node, onView }: { node: NodeResult; onView?: () => void }) 
           })}
         </div>
       )}
-      {onView && node.hands.length > 0 && (
+      {onView && node.handIds.length > 0 && (
         <button onClick={onView} className="mt-1 text-xs text-blue-400 hover:text-blue-300">
-          ▶ Review these {node.hands.length} hands
+          ▶ Review these {node.handIds.length} hands
         </button>
       )}
     </div>
   )
 }
 
-export default function PostflopView({ hands, formationId, nodeId, onOpenHands, onBack }: Props) {
+export default function PostflopView({ formationId, nodeId, onOpenHands, onBack }: Props) {
   const init = readState()
   const [mode, setMode] = useState<PostflopMode>(init.mode)
   const [filter, setFilter] = useState<PostflopFilter>(init.filter)
@@ -112,8 +112,12 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
     street === 'flop' ? s.flop
       : street === 'turn' ? [...s.flop, ...(s.turnCard ? [s.turnCard] : [])]
       : [...s.flop, ...(s.turnCard ? [s.turnCard] : []), ...(s.riverCard ? [s.riverCard] : [])]
-  const spots = useMemo(() => extractSpots(hands), [hands])
+  // Only this formation's spots are loaded; the node report (texture/node/mode)
+  // is computed client-side. Drill-down resolves hand ids on demand.
+  const [spots, setSpots] = useState<FlopSpot[]>([])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId])
   const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter), [spots, formationId, nodeId, mode, filter])
+  const openHands = async (ids: string[], index: number) => onOpenHands(await fetchHandsByIds(ids), index)
 
   // Mirror state into the URL (replace, so it doesn't spam history) so back/refresh restore it.
   useEffect(() => {
@@ -124,7 +128,7 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
 
   const set = (patch: Partial<PostflopFilter>) => setFilter(f => ({ ...f, ...patch }))
 
-  const handList = r.listSpots.map(x => x.spot.hand)
+  const handList = r.listSpots.map(x => x.spot.handId)
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -150,7 +154,7 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
           {r.prior && (
             <div className="w-72 shrink-0">
               <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">← Preceding (villain, pop)</div>
-              <NodeChart node={r.prior} onView={() => onOpenHands(r.prior!.hands, 0)} />
+              <NodeChart node={r.prior} onView={() => openHands(r.prior!.handIds, 0)} />
             </div>
           )}
 
@@ -168,7 +172,7 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
                   <span className="min-w-0 flex-1">hand class</span>
                 </div>
                 {r.listSpots.map((x, i) => (
-                  <button key={x.spot.handId} onClick={() => onOpenHands(handList, i)}
+                  <button key={x.spot.handId} onClick={() => openHands(handList, i)}
                     className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-white/5 transition-colors text-left text-xs">
                     <span className="w-28 flex gap-0.5">{x.cards?.map((c, j) => <PlayingCard key={j} card={c} tiny />)}</span>
                     <span className="w-32 flex gap-0.5">
@@ -186,7 +190,7 @@ export default function PostflopView({ hands, formationId, nodeId, onOpenHands, 
           {r.responses.length > 0 && (
             <div className="w-72 shrink-0">
               <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Resulting (villain, pop) →</div>
-              {r.responses.map((n, i) => <NodeChart key={i} node={n} onView={() => onOpenHands(n.hands, 0)} />)}
+              {r.responses.map((n, i) => <NodeChart key={i} node={n} onView={() => openHands(n.handIds, 0)} />)}
             </div>
           )}
         </div>

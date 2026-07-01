@@ -1,10 +1,18 @@
 import type { ReportSel, SolverTable } from './reports'
+import type { TableKind } from './positionUtils'
 
-// Lazy-load the GTO solver table for a report (PLO50 / 6-max / 100bb), cached
-// per file. Served from /public/solver/ as static JSON.
+// Lazy-load the GTO solver table for a report (PLO50 / 100bb), cached per file.
+// Served from /public/solver/ as static JSON. Heads-up has its own single
+// SB(button)-vs-BB matchup under /solver/hu/.
 const cache = new Map<string, Promise<SolverTable>>()
 
-export function solverUrl(sel: ReportSel): string {
+export function solverUrl(sel: ReportSel, kind: TableKind = 'sixmax'): string {
+  if (kind === 'hu') {
+    return sel.type === 'rfi' ? '/solver/hu/rfi.json'
+      : sel.type === 'vsrfi' ? '/solver/hu/vsrfi.json'
+        : sel.type === 'vs3bet' ? '/solver/hu/vs3bet.json'
+          : '' // limpiso — n/a
+  }
   return sel.type === 'rfi'
     ? `/solver/rfi/${sel.pos.toLowerCase()}.json`
     : sel.type === 'vsrfi'
@@ -14,8 +22,8 @@ export function solverUrl(sel: ReportSel): string {
         : '' // limpiso — no GTO baseline
 }
 
-export function loadSolver(sel: ReportSel): Promise<SolverTable> {
-  const url = solverUrl(sel)
+export function loadSolver(sel: ReportSel, kind: TableKind = 'sixmax'): Promise<SolverTable> {
+  const url = solverUrl(sel, kind)
   let p = cache.get(url)
   if (!p) {
     p = fetch(url).then(r => {

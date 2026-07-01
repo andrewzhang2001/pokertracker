@@ -1,11 +1,12 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
-import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
+import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
-import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
+import type { TableKind } from './lib/positionUtils'
 import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
@@ -97,10 +98,17 @@ export default function App() {
   const [dbError, setDbError] = useState<string | null>(null)
   const [vpipFilter, setVpipFilter] = useState<VpipFilter>('all')
 
-  // reports view state
-  const [reportHands, setReportHands] = useState<ParsedHand[]>([])
+  // reports view state. The menu/tiles run off the compact aggregate grid; the
+  // postflop views fetch their own per-formation spots (see PostflopMenu/View).
   const [reportStatus, setReportStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [reportError, setReportError] = useState<string | null>(null)
+  // preflop report grid (one GROUP BY) — drives every report/leakbuster tile
+  const [reportGrid, setReportGrid] = useState<ReportGridRow[]>([])
+  // 6-max vs heads-up — top-level filter for reports/leakbuster/postflop
+  const [kind, setKind] = useState<TableKind>('sixmax')
+  // a single report's drill-down hands (fetched only when a report is opened)
+  const [detailHands, setDetailHands] = useState<ParsedHand[]>([])
+  const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   // drill-down: viewing a subset of hands (from a report bucket) in the replayer
   const [drill, setDrill] = useState<{ hands: ParsedHand[]; notes: string[]; index: number } | null>(null)
   // GTO solver table for the current report (lazy-loaded), keyed by its url
@@ -133,13 +141,17 @@ export default function App() {
     }
   }
 
-  // Leakbuster = your hands only; Reports/Postflop = the pooled sample.
-  async function loadReports(mine: boolean) {
+  // Reports/Leakbuster menu — the compact preflop grid (no hand pool fetched).
+  // Prefetched once on mount so entering Reports/Leakbuster is instant; the grid
+  // is small and serves both views (population + your-hands columns).
+  const gridFetched = useRef(false)
+  async function loadReportGrid() {
+    if (gridFetched.current) { setReportStatus('idle'); return }
     setReportStatus('loading')
     setReportError(null)
     try {
-      const { hands } = await fetchHandsFromDb(mine)
-      setReportHands(hands)
+      setReportGrid(await fetchReportGrid())
+      gridFetched.current = true
       setReportStatus('idle')
     } catch (e) {
       setReportError(String((e as Error).message ?? e))
@@ -157,10 +169,16 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
+  // Prefetch the report grid in the background (from any view) so opening
+  // Reports/Leakbuster shows instantly. Cheap; safe to fire on mount.
+  useEffect(() => { loadReportGrid() // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Fetch data when entering database/reports/leakbuster/postflop (covers direct loads & refresh).
   useEffect(() => {
     if (view === 'database') loadDatabase()
-    else if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports(view === 'leakbuster')
+    else if (view === 'reports' || view === 'leakbuster') loadReportGrid()
+    // postflop fetches its own per-formation spots inside PostflopMenu/View
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
 
@@ -168,12 +186,32 @@ export default function App() {
   useEffect(() => {
     const sel = parseReportSel(path)
     if ((view !== 'reports' && view !== 'leakbuster') || !sel) return
-    const url = solverUrl(sel)
+    const url = solverUrl(sel, kind)
     if (!url) return // solverless report (e.g. limp vs iso)
     let cancelled = false
-    loadSolver(sel).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
+    loadSolver(sel, kind).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
     return () => { cancelled = true }
-  }, [view, path])
+  }, [view, path, kind])
+
+  // Fetch just the open report's hands (those with a qualifying spot) so the
+  // detail view can build populated bucket lists without loading the whole pool.
+  // Keyed on the report's identity (not multiway — that's filtered client-side).
+  const reportSelForDetail = (view === 'reports' || view === 'leakbuster') ? parseReportSel(path) : null
+  const detailKey = reportSelForDetail
+    ? `${view}:${kind}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
+    : ''
+  useEffect(() => {
+    if (!reportSelForDetail) return
+    const subject = view === 'leakbuster' ? 'hero' : 'population'
+    let cancelled = false
+    setDetailStatus('loading')
+    setDetailHands([])
+    fetchReportHands(reportSelForDetail, subject, kind)
+      .then(({ hands }) => { if (!cancelled) { setDetailHands(hands); setDetailStatus('idle') } })
+      .catch(() => { if (!cancelled) setDetailStatus('error') })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailKey])
 
   // Decode shared link on first load — supports #id= (new) and #h= (legacy)
   useEffect(() => {
@@ -226,11 +264,18 @@ export default function App() {
 
   async function handleExport() {
     setExportState('busy')
+    setExportMsg(`Saving 0/${importHands.length.toLocaleString()}…`)
     try {
-      const n = await exportHandsToDb(importHands, importNotes)
-      setExportState('done')
-      setExportMsg(`Saved ${n}`)
-      setTimeout(() => setExportState('idle'), 2500)
+      const r = await exportHandsToDb(importHands, importNotes, p => {
+        const extra = [p.duplicate && `${p.duplicate.toLocaleString()} dup`, p.failed && `${p.failed.toLocaleString()} failed`].filter(Boolean).join(' · ')
+        setExportMsg(`Saving ${p.done.toLocaleString()}/${p.total.toLocaleString()}${extra ? ` · ${extra}` : ''}…`)
+      })
+      const parts = [`${r.added.toLocaleString()} new`]
+      if (r.duplicate) parts.push(`${r.duplicate.toLocaleString()} dup`)
+      if (r.failed) parts.push(`${r.failed.toLocaleString()} failed`)
+      setExportState(r.failed ? 'error' : 'done')
+      setExportMsg(`Saved ${parts.join(' · ')}`)
+      setTimeout(() => setExportState('idle'), r.failed ? 6000 : 3000)
     } catch (e) {
       setExportState('error')
       setExportMsg(String((e as Error).message ?? e))
@@ -351,12 +396,13 @@ export default function App() {
         />
       )
     }
-    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
-    if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
+    if (reportStatus === 'loading') return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
+    if (reportStatus === 'error') return <CenteredMessage title="Couldn't load reports" detail={reportError ?? ''} onBack={() => navigate('/')} />
     if (reportSel === null) {
-      return <ReportsMenu hands={reportHands} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
-    const solverTable = solver && solver.url === solverUrl(reportSel) ? solver.table : undefined
+    if (detailStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate(base)} />
+    const solverTable = solver && solver.url === solverUrl(reportSel, kind) ? solver.table : undefined
     // Limp-vs-iso reports carry a heads-up / multiway filter in the URL query.
     const mwToggle = reportSel.type === 'limpiso' ? (
       <div className="ml-auto flex rounded-full border border-gray-700 overflow-hidden text-xs">
@@ -370,7 +416,7 @@ export default function App() {
     ) : undefined
     return (
       <ReportsView
-        result={buildReport(reportHands, reportSel, solverTable, subject)}
+        result={buildReport(detailHands, reportSel, solverTable, subject, kind)}
         headerExtra={mwToggle}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
@@ -402,13 +448,12 @@ export default function App() {
         />
       )
     }
-    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
-    if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
     const pfSel = parsePostflopSel(path)
     if (!pfSel) {
       return (
         <PostflopMenu
-          hands={reportHands}
+          kind={kind}
+          onKind={setKind}
           onOpen={(formationId, nodeId) => navigate(`/postflop/${formationId}/${nodeId}${window.location.search}`)}
           onBack={() => navigate('/')}
         />
@@ -416,7 +461,6 @@ export default function App() {
     }
     return (
       <PostflopView
-        hands={reportHands}
         formationId={pfSel.formationId}
         nodeId={pfSel.nodeId}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
@@ -486,9 +530,9 @@ export default function App() {
           : 'border-yellow-600 text-yellow-400 bg-yellow-600/10 hover:bg-yellow-600/20'
       }`}
     >
-      {exportState === 'busy' ? 'Saving…'
+      {exportState === 'busy' ? (exportMsg || 'Saving…')
         : exportState === 'done' ? exportMsg
-        : exportState === 'error' ? 'Export failed'
+        : exportState === 'error' ? (exportMsg || 'Export failed')
         : `Export ${importHands.length} → Database`}
     </button>
   )

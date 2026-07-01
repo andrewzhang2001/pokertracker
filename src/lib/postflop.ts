@@ -1,5 +1,5 @@
 import type { ParsedHand, ParsedCard, HandAction } from './types'
-import { displayPosition } from './positionUtils'
+import { displayPosition, type TableKind } from './positionUtils'
 import { computeHandState } from './computeHandState'
 import { classifyFlop, classifyBoard, type HandClass } from './ploEval'
 
@@ -61,7 +61,7 @@ export interface FlopAction { actor: FlopActor; type: FlopActType; betPct?: numb
 
 export interface FlopSpot {
   handId: string
-  hand: ParsedHand
+  hand?: ParsedHand          // omitted on rehydrated (materialized) spots; drill-down fetches by handId
   potType: 'SRP' | '3BP'
   oopPos: string
   ipPos: string
@@ -113,9 +113,13 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
   if (potType === 'SRP' && vol[0]?.type !== 'raise') return null
   if (potType === '3BP' && (vol[0]?.type !== 'raise' || vol[1]?.type !== 'raise')) return null
 
-  // raise-size sanity: real open, and (3BP) a ~pot-sized 3-bet
+  // raise-size sanity: real open, and (3BP) a ~pot-sized 3-bet. Blind-vs-blind
+  // opens (SB opener — incl. HU, where the button normalizes to SB) run smaller
+  // (~2.6bb), so loosen the open gate for those (matches BVB_OPEN_MIN_BB).
   const openTo = vol[0].amount ?? 0
-  if (openTo / hand.bigBlind < RFI_MIN_BB) return null
+  const openerPlayer = hand.players.find(p => p.seatNumber === vol[0].seatNumber)
+  const openerIsSB = !!openerPlayer && displayPosition(openerPlayer.position, n) === 'SB'
+  if (openTo / hand.bigBlind < (openerIsSB ? 2.6 : RFI_MIN_BB)) return null
   if (potType === '3BP') {
     const tb = vol[1]
     const potBefore3bet = computeHandState(hand, hand.actions.indexOf(tb) - 1).pot
@@ -230,6 +234,7 @@ export interface NodeDef {
 export interface Formation {
   id: string
   label: string
+  kind: TableKind         // 'sixmax' (6-max/full ring) or 'hu' (heads-up)
   potType: 'SRP' | '3BP'
   oopRoles: string[]      // positions the OOP (first-to-act) seat may hold
   ipRoles: string[]       // positions the IP seat may hold
@@ -241,12 +246,16 @@ const OPENERS = ['LJ', 'HJ', 'CO']        // RFI raiser positions (OOP vs an IP 
 const IP_CALLERS = ['HJ', 'CO', 'BU']     // in-position caller / 3-bettor positions
 
 export const FORMATIONS: Formation[] = [
-  { id: 'srp-bb-vs-ip', label: 'SRP BB vs IP', potType: 'SRP', oopRoles: ['BB'], ipRoles: IP_RFI, pfa: 'ip' },
-  { id: 'srp-coldcall', label: 'SRP Cold Call', potType: 'SRP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'oop' },
-  { id: 'srp-bvb', label: 'SRP Blind vs Blind', potType: 'SRP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'oop' },
-  { id: '3bp-oop', label: '3BP OOP vs RFI', potType: '3BP', oopRoles: ['SB', 'BB'], ipRoles: IP_RFI, pfa: 'oop' },
-  { id: '3bp-ip', label: '3BP IP vs RFI', potType: '3BP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'ip' },
-  { id: '3bp-bvb', label: '3BP Blind vs Blind', potType: '3BP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'ip' },
+  { id: 'srp-bb-vs-ip', label: 'SRP BB vs IP', kind: 'sixmax', potType: 'SRP', oopRoles: ['BB'], ipRoles: IP_RFI, pfa: 'ip' },
+  { id: 'srp-coldcall', label: 'SRP Cold Call', kind: 'sixmax', potType: 'SRP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'oop' },
+  { id: 'srp-bvb', label: 'SRP Blind vs Blind', kind: 'sixmax', potType: 'SRP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'oop' },
+  { id: '3bp-oop', label: '3BP OOP vs RFI', kind: 'sixmax', potType: '3BP', oopRoles: ['SB', 'BB'], ipRoles: IP_RFI, pfa: 'oop' },
+  { id: '3bp-ip', label: '3BP IP vs RFI', kind: 'sixmax', potType: '3BP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'ip' },
+  { id: '3bp-bvb', label: '3BP Blind vs Blind', kind: 'sixmax', potType: '3BP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'ip' },
+  // Heads-up: SB is the button (acts first preflop), so postflop BB is OOP / SB IP.
+  // SRP → SB raised (aggressor is IP); 3BP → BB 3-bet (aggressor is OOP).
+  { id: 'hu-srp', label: 'HU SRP (SB vs BB)', kind: 'hu', potType: 'SRP', oopRoles: ['BB'], ipRoles: ['SB'], pfa: 'ip' },
+  { id: 'hu-3bp', label: 'HU 3BP (SB vs BB)', kind: 'hu', potType: '3BP', oopRoles: ['BB'], ipRoles: ['SB'], pfa: 'oop' },
 ]
 
 // Canonical names for a decision node, depending on who the preflop aggressor is.
@@ -421,7 +430,7 @@ export interface NodeResult {
   total: number
   actionCounts: Record<string, number>  // outcome distribution over ALL reaching spots
   rows: ClassRow[]                        // hand-class breakdown (classified spots only)
-  hands: ParsedHand[]
+  handIds: string[]                       // reaching hands (for drill-down — fetched by id)
 }
 
 const CLASS_ORDER = [
@@ -488,7 +497,7 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
     const sub = [...t.subs.entries()].map(([label, counts]) => ({ label, counts, total: sum(counts) })).sort((a, b) => b.total - a.total)
     return { key: k, counts: t.counts, total: sum(t.counts), sub }
   })
-  return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, hands: reaching.map(s => s.hand) }
+  return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, handIds: reaching.map(s => s.handId) }
 }
 
 export type YesNoAny = 'any' | 'yes' | 'no'
