@@ -78,12 +78,20 @@ export interface ReportEntry {
   outOfRange?: boolean  // solver loaded but combo absent (opener opened off-range) → no EV
 }
 export interface ReportBucket {
+  key: string           // action key (raise/call/fold/limp) — aligns with the grid
   label: string
   color: string
   bar: string
   pct: number
   count: number
   entries: ReportEntry[]
+  // GTO error rate for this action = mistakes / evaluated, over the bucket's
+  // known-card hands (undefined for solverless reports). A "mistake" is a hand
+  // the action loses EV on vs GTO; for a play action (raise/limp) a hand outside
+  // the GTO range counts too (GTO folds it). Reveals how loose/capped the range
+  // actually is — e.g. a limp bucket that's 90% errors is almost all trash.
+  evaluated?: number
+  mistakes?: number
 }
 export interface ReportResult {
   title: string
@@ -104,10 +112,13 @@ export type ReportSel =
 
 // The vs-3-bet reports we keep: openers LJ/HJ/CO each get an IP- and an
 // OOP-3-bettor report; BU only faces OOP (blinds); SB only faces BB.
+// OOP before IP so the OOP tile lands in the first column for every opener —
+// aligning LJ/HJ/CO with BU, which only has an OOP 3-bettor (no IP caller once
+// the button opens).
 export const VS3BET_REPORTS: { opener: string; tag: Vs3betTag }[] = [
-  { opener: 'LJ', tag: 'ip' }, { opener: 'LJ', tag: 'oop' },
-  { opener: 'HJ', tag: 'ip' }, { opener: 'HJ', tag: 'oop' },
-  { opener: 'CO', tag: 'ip' }, { opener: 'CO', tag: 'oop' },
+  { opener: 'LJ', tag: 'oop' }, { opener: 'LJ', tag: 'ip' },
+  { opener: 'HJ', tag: 'oop' }, { opener: 'HJ', tag: 'ip' },
+  { opener: 'CO', tag: 'oop' }, { opener: 'CO', tag: 'ip' },
   { opener: 'BU', tag: 'oop' },
   { opener: 'SB', tag: 'bb' },
 ]
@@ -558,20 +569,30 @@ function assemble(
   const axes = { tight: 0, loose: 0, passive: 0, aggressive: 0 }
 
   const buckets: ReportBucket[] = specs.map(spec => {
+    // Error rate over known-card hands: mistakes / evaluated. A play action
+    // (solverIdx !== 0) on an out-of-range hand is itself a mistake (GTO folds it).
+    let evaluated = 0, mistakes = 0
     const entries = r.entries[spec.key].map(e => {
       if (!solver || !e.cards) return e
       const evs = solver[ploCombo(e.cards)]
       // Combo absent = the opener entered with a hand outside the GTO RFI range,
       // so the solver has no EV for it. Flag it (shown red, "not in range") but
-      // keep it out of the EV/100 math; it still counts in the action %s.
-      if (!evs) return { ...e, outOfRange: true }
+      // keep it out of the EV/100 math; it still counts in the action %s. It's an
+      // error for a play action (raising/limping a hand GTO folds), not for a fold.
+      if (!evs) {
+        evaluated++
+        if (spec.solverIdx !== 0) mistakes++
+        return { ...e, outOfRange: true }
+      }
       let bestIdx = 0
       for (let i = 1; i < evs.length; i++) if (evs[i] > evs[bestIdx]) bestIdx = i
       const loss = evs[bestIdx] - evs[spec.solverIdx]
       spots++
+      evaluated++
       // Count toward the total only what we'd also itemize, so the headline EV
       // loss always equals the sum of the mistake directions (no phantom loss).
       if (loss > MISTAKE_EPS && bestIdx !== spec.solverIdx) {
+        mistakes++
         totalLoss += loss
         const label = `${actionName(spec.solverIdx)} → ${actionName(bestIdx)}`
         const d = dir.get(label) ?? { count: 0, bbLost: 0 }
@@ -589,7 +610,7 @@ function assemble(
       }
       return { ...e, evLossBb: loss, bestAction: actionName(bestIdx) }
     })
-    return { label: spec.label, color: spec.style.color, bar: spec.style.bar, pct: r.pct[spec.key], count: r.counts[spec.key], entries }
+    return { key: spec.key, label: spec.label, color: spec.style.color, bar: spec.style.bar, pct: r.pct[spec.key], count: r.counts[spec.key], entries, evaluated, mistakes }
   })
 
   const ev: EvSummary | undefined = solver ? {
@@ -758,7 +779,7 @@ function assembleFromCounts(
       }
     }
     const count = counts[spec.key] ?? 0
-    return { label: spec.label, color: spec.style.color, bar: spec.style.bar, pct: total ? (count / total) * 100 : 0, count, entries: [] }
+    return { key: spec.key, label: spec.label, color: spec.style.color, bar: spec.style.bar, pct: total ? (count / total) * 100 : 0, count, entries: [] }
   })
 
   const ev: EvSummary | undefined = solver ? {
@@ -800,6 +821,53 @@ export function gridComboCounts(
     am.set(r.action, (am.get(r.action) ?? 0) + n)
   }
   return comboCounts
+}
+
+// ---- Hand filter (PLO) ------------------------------------------------------
+// A rank-based filter over a report's known-card combos: typing "AA" means
+// "holds a pair of aces", "AK" means "holds an ace and a king", etc. Suits are
+// ignored (they aren't stored per-rank in a way worth matching preflop). Works
+// off the combo string's rank chars, so it's game-agnostic in principle but is
+// only surfaced for PLO (NLHE has the 13×13 chart).
+const RANK_CHARS = new Set('23456789TJQKA')
+
+// Parse a typed query into a rank multiset ("AAK" → A:2, K:1). "10" → "T".
+// Returns null when nothing rank-like was typed (→ no filter).
+export function parseHandQuery(input: string): Map<string, number> | null {
+  const m = new Map<string, number>()
+  for (const ch of input.toUpperCase().replace(/10/g, 'T')) {
+    if (RANK_CHARS.has(ch)) m.set(ch, (m.get(ch) ?? 0) + 1)
+  }
+  return m.size ? m : null
+}
+
+function comboMatches(combo: string, want: Map<string, number>): boolean {
+  const have = new Map<string, number>()
+  for (const ch of combo) if (RANK_CHARS.has(ch)) have.set(ch, (have.get(ch) ?? 0) + 1)
+  for (const [r, n] of want) if ((have.get(r) ?? 0) < n) return false
+  return true
+}
+
+// Per-action matched/total combo counts for a hand query. total = all KNOWN-card
+// combos for that action (unknown-card spots can't be matched, so they're
+// excluded from both); matched = those holding the queried ranks. Keyed by action
+// so it aligns with ReportBucket.key. Returns null when the query is empty.
+export function handFilterByAction(
+  rows: ReportGridRow[], sel: ReportSel, subject: Subject, tableKind: TableKind, game: GameKind, input: string,
+): Record<string, { matched: number; total: number }> | null {
+  const want = parseHandQuery(input)
+  if (!want) return null
+  const out: Record<string, { matched: number; total: number }> = {}
+  for (const [combo, am] of gridComboCounts(rows, sel, subject, tableKind, game)) {
+    if (!combo) continue // unknown cards — not matchable
+    const hit = comboMatches(combo, want)
+    for (const [action, count] of am) {
+      const e = out[action] ?? (out[action] = { matched: 0, total: 0 })
+      e.total += count
+      if (hit) e.matched += count
+    }
+  }
+  return out
 }
 
 // Per-combo action counts keyed by the (non-null) combo string — the 13×13 grid's

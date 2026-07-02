@@ -3,7 +3,7 @@ import {
   formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel, lineSeq, parseFilter, writeFilter,
   type FlopSpot, type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
 } from '../lib/postflop'
-import { fetchFlopSpots, fetchFlopCounts } from '../lib/handsApi'
+import { fetchFlopSpots, fetchFlopCounts, peekFlopSpots, peekFlopCounts } from '../lib/handsApi'
 import { postflopAnchor } from '../lib/noteAnchor'
 import { fetchNoteAnchors } from '../lib/notesApi'
 import type { TableKind } from '../lib/positionUtils'
@@ -133,12 +133,12 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
 
   // Only the selected formation's spots are loaded; the tree (texture/line/node/
   // mode) is then computed client-side. Switching formation refetches.
-  const [spots, setSpots] = useState<FlopSpot[]>([])
+  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game) ?? [])
   useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
 
   // Per-formation sample counts (the selector bubbles) come from the server under
   // the active board filter + mode + month range.
-  const [counts, setCounts] = useState<Record<string, number>>({})
+  const [counts, setCounts] = useState<Record<string, number>>(() => peekFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game) ?? {})
   useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo, game])
 
   // Which nodes the user has notes on — one bulk fetch (postflop notes are keyed

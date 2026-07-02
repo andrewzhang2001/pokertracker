@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
-  buildReportFromGrid, leakProfile, MISTAKE_EPS, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
+  buildReportFromGrid, handFilterByAction, leakProfile, MISTAKE_EPS, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
   VS3BET_REPORTS, VS3BET_OPENERS, vs3betTagLabel, LIMP_ISO_TAGS, limpIsoTagLabel,
   type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable, type Subject,
   type ReportGridRow,
@@ -282,9 +282,30 @@ interface Props {
   onBack: () => void
   headerExtra?: React.ReactNode
   noteAnchor?: string
+  // PLO hand filter: the raw inputs to match a typed hand (e.g. "AA") against the
+  // report's combos. The text state + (memoized) match live here so keystrokes
+  // don't re-render App / re-run buildReport. Omitted for reports without a grid.
+  handFilterCtx?: {
+    rows: ReportGridRow[]
+    sel: ReportSel
+    subject: Subject
+    kind: TableKind
+    game: GameKind
+  }
 }
 
-export default function ReportsView({ result, onOpenHands, onBack, headerExtra, noteAnchor }: Props) {
+export default function ReportsView({ result, onOpenHands, onBack, headerExtra, noteAnchor, handFilterCtx }: Props) {
+  const [handQuery, setHandQuery] = useState('')
+  // Reset the filter when the open report changes (title/subtitle are stable per report).
+  useEffect(() => { setHandQuery('') }, [result.title, result.subtitle])
+  // Only the grid match recomputes on keystroke — cheap vs rebuilding the report.
+  const byAction = useMemo(
+    () => handFilterCtx && handQuery.trim()
+      ? handFilterByAction(handFilterCtx.rows, handFilterCtx.sel, handFilterCtx.subject, handFilterCtx.kind, handFilterCtx.game, handQuery)
+      : null,
+    [handFilterCtx, handQuery],
+  )
+  const filtering = !!byAction
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
@@ -297,6 +318,15 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra, 
         <span className="text-white font-semibold">{result.title}</span>
         <span className="text-gray-500 text-xs">{result.subtitle}</span>
         <div className="ml-auto flex items-center gap-3">
+          {handFilterCtx && (
+            <input
+              value={handQuery}
+              onChange={e => setHandQuery(e.target.value)}
+              placeholder="hand e.g. AA"
+              title="Filter this range by rank — AA = holds a pair of aces, AK = holds an ace and a king. Suits ignored; known cards only."
+              className="w-28 bg-black/40 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-yellow-500/50"
+            />
+          )}
           {headerExtra}
           {noteAnchor && <NotesPanel anchor={noteAnchor} />}
         </div>
@@ -307,6 +337,11 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra, 
           <div className="text-center text-gray-400 text-sm mb-2">
             Qualifying spots: <span className="text-white font-semibold">{result.total}</span>
           </div>
+          {filtering && (
+            <div className="text-center text-xs text-yellow-300/80 mb-2">
+              <span className="font-semibold">{handQuery.toUpperCase()}</span> as a share of each action · known cards only
+            </div>
+          )}
           {result.total === 0 ? (
             <p className="text-center text-gray-600 text-sm">
               No qualifying spots yet. Import &amp; export more hands.
@@ -319,12 +354,26 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra, 
                 ))}
               </div>
               <div className="flex justify-around text-sm">
-                {result.buckets.map(b => (
-                  <div key={b.label} className="text-center">
-                    <div className={`font-bold ${b.color}`}>{fmtPct(b.pct)}</div>
-                    <div className="text-gray-500 text-xs">{b.label} · {b.count}</div>
-                  </div>
-                ))}
+                {result.buckets.map(b => {
+                  const hf = filtering ? byAction![b.key] : undefined
+                  return (
+                    <div key={b.label} className="text-center">
+                      <div className={`font-bold ${b.color}`}>{fmtPct(b.pct)}</div>
+                      <div className="text-gray-500 text-xs">{b.label} · {b.count}</div>
+                      {b.evaluated !== undefined && b.evaluated > 0 && (
+                        <div className="text-gray-500 text-xs" title={`${b.mistakes}/${b.evaluated} of these hands (known cards) were GTO mistakes — for a raise/limp, hands GTO folds count too`}>
+                          <span className="text-gray-600">err </span>
+                          <span className={(b.mistakes! / b.evaluated) >= 0.5 ? 'text-red-400' : 'text-gray-400'}>{Math.round((b.mistakes! / b.evaluated) * 100)}%</span>
+                        </div>
+                      )}
+                      {hf && (
+                        <div className="text-yellow-300 text-xs mt-0.5" title="matched / known-card combos for this action">
+                          {hf.matched}/{hf.total}{hf.total ? ` · ${Math.round((hf.matched / hf.total) * 100)}%` : ''}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </>
           )}

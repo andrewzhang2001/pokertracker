@@ -60,6 +60,9 @@ export async function exportHandsToDb(
     }
     onProgress?.({ done: Math.min(i + EXPORT_CHUNK, total), total, added, duplicate, failed })
   }
+  // New hands change the postflop data — drop the cached spots/counts so the
+  // views refetch fresh next time.
+  if (added > 0 || duplicate > 0) clearPostflopCache()
   return { done: total, total, added, duplicate, failed }
 }
 
@@ -99,25 +102,61 @@ export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'popula
   }
 }
 
+// In-memory caches for the postflop fetches. Drilling into the hand replayer
+// unmounts the postflop view, so returning to it would otherwise refetch the
+// same formation's spots every time. Keyed by the exact query string; peek*()
+// lets a view initialize from cache synchronously (no loading flash), and the
+// caches are cleared on export (new hands change the underlying data).
+const flopSpotsCache = new Map<string, FlopSpot[]>()
+const flopCountsCache = new Map<string, Record<string, number>>()
+
+export function clearPostflopCache(): void {
+  flopSpotsCache.clear()
+  flopCountsCache.clear()
+}
+
+const flopSpotsKey = (formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind) =>
+  withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId, mode, game }), range).toString()
+
+const flopCountsKey = (mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind) => {
+  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode, game }), range)
+  writeFilter(q, filter)
+  return q.toString()
+}
+
+export function peekFlopSpots(formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind): FlopSpot[] | undefined {
+  return flopSpotsCache.get(flopSpotsKey(formationId, range, mode, game))
+}
+export function peekFlopCounts(mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind): Record<string, number> | undefined {
+  return flopCountsCache.get(flopCountsKey(mode, filter, range, game))
+}
+
 // One formation's slim postflop spots — the browser runs the node-walk over
 // these (board texture / line / node / mode all stay client-side). `hand` is
 // omitted; drill-down resolves it via fetchHandsByIds.
 export async function fetchFlopSpots(formationId: string, range?: DateRange, mode: PostflopMode = 'population', game: GameKind = 'plo'): Promise<FlopSpot[]> {
-  const p = withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId, mode, game }), range)
-  const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
+  const key = flopSpotsKey(formationId, range, mode, game)
+  const hit = flopSpotsCache.get(key)
+  if (hit) return hit
+  const res = await fetch(`/api/hands?${key}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load spots')
   const data = await res.json() as { spots?: FlopSpot[] }
-  return data.spots ?? []
+  const spots = data.spots ?? []
+  flopSpotsCache.set(key, spots)
+  return spots
 }
 
 // Per-formation sample counts under the active board filter (postflop menu tiles).
 export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange, game: GameKind = 'plo'): Promise<Record<string, number>> {
-  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode, game }), range)
-  writeFilter(q, filter)
-  const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
+  const key = flopCountsKey(mode, filter, range, game)
+  const hit = flopCountsCache.get(key)
+  if (hit) return hit
+  const res = await fetch(`/api/hands?${key}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load counts')
   const data = await res.json() as { counts?: { formation_id: string; total: number }[] }
-  return Object.fromEntries((data.counts ?? []).map(c => [c.formation_id, c.total]))
+  const counts = Object.fromEntries((data.counts ?? []).map(c => [c.formation_id, c.total]))
+  flopCountsCache.set(key, counts)
+  return counts
 }
 
 // Drill-down: resolve hand ids to full ParsedHands, in the requested order.

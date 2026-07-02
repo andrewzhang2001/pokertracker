@@ -219,6 +219,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailKey])
 
+
   function loadText(text: string) {
     const parsed = dedupeAndSort(parseHandHistories(text))
     if (!parsed.length) {
@@ -421,6 +422,7 @@ export default function App() {
         result={buildReport(detailHands, reportSel, solverTable, subject, kind)}
         headerExtra={mwToggle}
         noteAnchor={reportAnchor(game, kind, subject, reportSel)}
+        handFilterCtx={{ rows: reportGrid, sel: reportSel, subject, kind, game }}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
       />

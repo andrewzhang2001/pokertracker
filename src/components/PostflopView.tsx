@@ -6,7 +6,7 @@ import {
 } from '../lib/postflop'
 import type { HandClass } from '../lib/ploEval'
 import type { GameKind } from '../lib/games'
-import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
+import { fetchFlopSpots, fetchHandsByIds, peekFlopSpots } from '../lib/handsApi'
 import { monthRange } from './MonthRange'
 import PlayingCard from './PlayingCard'
 import PostflopFilters from './PostflopFilters'
@@ -277,7 +277,7 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
       : [...s.flop, ...(s.turnCard ? [s.turnCard] : []), ...(s.riverCard ? [s.riverCard] : [])]
   // Only this formation's spots are loaded; the node report (texture/node/mode)
   // is computed client-side. Drill-down resolves hand ids on demand.
-  const [spots, setSpots] = useState<FlopSpot[]>([])
+  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game) ?? [])
   useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
   // Bet-size filter (only when facing a bet): narrows all panels to that faced size.
   const facesBet = node ? nodeFacesBet(node) : false
@@ -335,8 +335,12 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
   const shown = sel ? r.listSpots.filter(x => topKey(x.klass) === sel.made && (!sel.sub || x.klass?.sub === sel.sub)) : r.listSpots
 
   // Mirror state into the URL (replace, so it doesn't spam history) so back/refresh restore it.
+  // Carry the menu's selection params (f = formation, l/t = flop/turn line) through
+  // untouched, so returning to the postflop menu restores what you were looking at.
   useEffect(() => {
+    const prev = new URLSearchParams(window.location.search)
     const q = new URLSearchParams({ m: mode })
+    for (const k of ['f', 'l', 't']) { const v = prev.get(k); if (v) q.set(k, v) }
     writeFilter(q, filter)
     history.replaceState(null, '', `/postflop/${formationId}/${nodeId}?${q}`)
   }, [formationId, nodeId, mode, filter])
