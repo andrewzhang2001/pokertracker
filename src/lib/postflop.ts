@@ -68,7 +68,12 @@ export const straightPossibleFlop = straightPossibleBoard
 
 export type FlopActor = 'oop' | 'ip'
 export type FlopActType = 'check' | 'bet' | 'call' | 'raise' | 'fold'
-export interface FlopAction { actor: FlopActor; type: FlopActType; betPct?: number }
+// betPct = the action's size as % of pot (bets: bet/pot; raises: raise increment
+// over the pot after the call — a sizing metric for bucketing). mdf = the minimum
+// defense frequency this bet/raise imposes on the player facing it, potBefore /
+// (potBefore + R) where R is the total chips committed by the action. The two are
+// NOT interconvertible for raises, so mdf is stored, not derived.
+export interface FlopAction { actor: FlopActor; type: FlopActType; betPct?: number; mdf?: number }
 
 export interface FlopSpot {
   handId: string
@@ -172,6 +177,7 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
       else if (AGGRO.includes(a.type)) { type = betSeen ? 'raise' : 'bet'; betSeen = true }
       if (!type) continue
       let betPct: number | undefined
+      let mdf: number | undefined
       if (type === 'bet' || type === 'raise') {
         const R = a.amount ?? 0                    // total "to" amount
         const potBefore = computeHandState(hand, hand.actions.indexOf(a) - 1).pot
@@ -184,9 +190,12 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
           const potAfterCall = potBefore + toCall
           betPct = potAfterCall > 0 ? (R - toCall) / potAfterCall : 0
         }
+        // MDF the defender faces. potBefore already includes the bet being raised,
+        // so R = total "to" amount is the aggressor's full risk in both cases.
+        mdf = potBefore + R > 0 ? potBefore / (potBefore + R) : undefined
         lastAggroAmt = R
       }
-      out.push({ actor, type, betPct })
+      out.push({ actor, type, betPct, mdf })
     }
     return out
   }
@@ -450,6 +459,12 @@ export interface ClassRow {
   total: number
   sub: { label: string; counts: Record<string, number>; sizes: SizeBuckets; total: number }[]
 }
+// MDF vs actual defense, per faced-bet-size bucket [ <40%, 40–70%, >70% ] plus an
+// all-sizes roll-up. n = spots facing a bet in that bucket; sumMdf = Σ per-spot
+// required MDF (mean = sumMdf/n); defends = call+raise, folds = fold. The over/
+// underfold signal is (defends/n) − (sumMdf/n): negative ⇒ overfolding.
+export interface MdfCell { n: number; sumMdf: number; defends: number; folds: number }
+export interface MdfSummary { buckets: [MdfCell, MdfCell, MdfCell]; all: MdfCell }
 export interface NodeResult {
   label: string
   acting: FlopActor
@@ -457,6 +472,7 @@ export interface NodeResult {
   actionCounts: Record<string, number>  // outcome distribution over ALL reaching spots
   rows: ClassRow[]                        // hand-class breakdown (classified spots only)
   handIds: string[]                       // reaching hands (for drill-down — fetched by id)
+  mdf?: MdfSummary                        // present only when this node faces a bet/raise
 }
 
 // Strongest → weakest. Interleaves the PLO ladder (overpair/top/middle/bottom/
@@ -496,6 +512,12 @@ const facedBetPct = (s: FlopSpot, node: NodeDef): number | undefined => {
   const a = di > 0 ? streamOf(s, node)[di - 1] : undefined
   return a && (a.type === 'bet' || a.type === 'raise') ? a.betPct : undefined
 }
+// The MDF imposed by the bet/raise the acting player faces at this node.
+const facedMdf = (s: FlopSpot, node: NodeDef): number | undefined => {
+  const di = decisionIndex(node)
+  const a = di > 0 ? streamOf(s, node)[di - 1] : undefined
+  return a && (a.type === 'bet' || a.type === 'raise') ? a.mdf : undefined
+}
 
 // Does a spot reach this node, with the right player on the clock?
 function reaches(s: FlopSpot, node: NodeDef): boolean {
@@ -522,10 +544,26 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
   const newAgg = (): Agg => ({ counts: {}, sizes: {} })
   const actionCounts: Record<string, number> = {}
   const top = new Map<string, Agg & { subs: Map<string, Agg> }>()
+
+  // MDF vs actual defense — only meaningful when this node's decision faces a bet.
+  const facesBet = nodeFacesBet(node)
+  const newCell = (): MdfCell => ({ n: 0, sumMdf: 0, defends: 0, folds: 0 })
+  const mdfSum: MdfSummary = { buckets: [newCell(), newCell(), newCell()], all: newCell() }
+
   for (const s of reaching) {
     const act = streamOf(s, node)[di]
     const oc = act.type
     actionCounts[oc] = (actionCounts[oc] || 0) + 1
+    if (facesBet) {
+      const m = facedMdf(s, node)
+      if (m !== undefined) {
+        const cells = [mdfSum.buckets[sizeBucket(facedBetPct(s, node) ?? 0)], mdfSum.all]
+        for (const c of cells) {
+          c.n++; c.sumMdf += m
+          if (oc === 'fold') c.folds++; else if (oc === 'call' || oc === 'raise') c.defends++
+        }
+      }
+    }
     const hc = classOf(s, node)
     if (!hc) continue
     const key = hc.made ?? (hc.draws.length ? 'draw' : 'air')
@@ -543,7 +581,11 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
     const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => subRank(a.label) - subRank(b.label))
     return { key: k, counts: t.counts, sizes: t.sizes, total: sum(t.counts), sub }
   })
-  return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, handIds: reaching.map(s => s.handId) }
+  return {
+    label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows,
+    handIds: reaching.map(s => s.handId),
+    mdf: facesBet && mdfSum.all.n > 0 ? mdfSum : undefined,
+  }
 }
 
 export type YesNoAny = 'any' | 'yes' | 'no'

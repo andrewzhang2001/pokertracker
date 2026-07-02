@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
   formationReport, FORMATIONS, getNode, nodeLabel, nodeFacesBet, parseFilter, writeFilter,
-  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp, type MdfSummary, type MdfCell,
 } from '../lib/postflop'
 import type { HandClass } from '../lib/ploEval'
 import type { GameKind } from '../lib/games'
@@ -77,6 +77,43 @@ function StackedBar({ counts, sizes, segments }: { counts: Record<string, number
   )
 }
 
+// MDF vs actual defense, per faced-bet size. req = the game-theory floor set by
+// the sizing (mean over spots); def = how often the player actually continued
+// (call+raise). gap = def − req: negative ⇒ overfolding = exploitable (bet/bluff
+// more into this player), so it's flagged red; positive (defending enough) green.
+function MdfPanel({ mdf }: { mdf: MdfSummary }) {
+  const rows: { label: string; cell: MdfCell }[] = [
+    { label: '<40%', cell: mdf.buckets[0] }, { label: '40–70%', cell: mdf.buckets[1] },
+    { label: '>70%', cell: mdf.buckets[2] }, { label: 'all', cell: mdf.all },
+  ]
+  return (
+    <div className="mb-4">
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">MDF vs actual <span className="text-gray-600 normal-case">· defend = call + raise</span></div>
+      <div className="space-y-0.5 text-xs">
+        <div className="flex items-center gap-2 text-[10px] text-gray-600"><span className="w-14">size</span><span className="w-8 text-right">n</span><span className="w-12 text-right">req</span><span className="w-12 text-right">def</span><span className="flex-1 text-right">gap</span></div>
+        {rows.map(({ label, cell }) => {
+          if (cell.n === 0) return (
+            <div key={label} className={`flex items-center gap-2 ${label === 'all' ? 'border-t border-gray-800 pt-0.5 text-gray-400' : 'text-gray-600'}`}>
+              <span className="w-14">{label}</span><span className="w-8 text-right">0</span><span className="flex-1 text-right text-gray-700">—</span>
+            </div>
+          )
+          const req = cell.sumMdf / cell.n, def = cell.defends / cell.n, gap = def - req
+          const gapColor = Math.abs(gap) < 0.03 ? 'text-gray-500' : gap < 0 ? 'text-red-400' : 'text-green-400'
+          return (
+            <div key={label} className={`flex items-center gap-2 ${label === 'all' ? 'border-t border-gray-800 pt-0.5 text-gray-300' : 'text-gray-400'}`}>
+              <span className="w-14">{label}</span>
+              <span className="w-8 text-right text-gray-500">{cell.n}</span>
+              <span className="w-12 text-right text-gray-400">{pct(Math.round(req * 100))}</span>
+              <span className="w-12 text-right text-gray-300">{pct(Math.round(def * 100))}</span>
+              <span className={`flex-1 text-right ${gapColor}`} title={gap < 0 ? 'overfolds — exploitable' : 'defends enough'}>{gap >= 0 ? '+' : '−'}{pct(Math.round(Math.abs(gap) * 100))}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export type Sel = { made: string; sub?: string }
 
 // Drop the redundant parent-category prefix from a sub-row label under its row —
@@ -139,6 +176,7 @@ function NodeChart({ node, onView, selected, onSelect }: {
           })}
         </div>
       )}
+      {node.mdf && <div className="mt-2"><MdfPanel mdf={node.mdf} /></div>}
       {onView && node.handIds.length > 0 && (
         <button onClick={onView} className="mt-1 text-xs text-blue-400 hover:text-blue-300">
           ▶ Review these {node.handIds.length} hands

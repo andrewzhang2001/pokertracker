@@ -47,6 +47,38 @@ describe('slimFlopSpot is a lossless projection of extractFlopSpot', () => {
   })
 })
 
+describe('MDF is computed on every bet/raise', () => {
+  const allActions = fullSpots.flatMap(s => [...s.actions, ...s.turnActions, ...s.riverActions])
+  const aggro = allActions.filter(a => a.type === 'bet' || a.type === 'raise')
+
+  test('found bets/raises to check', () => {
+    expect(aggro.length).toBeGreaterThan(0)
+    for (const a of aggro) expect(a.mdf).toBeDefined()
+  })
+
+  test('bet MDF equals 1/(1+betPct)', () => {
+    // For a plain bet, betPct = bet/potBefore = x, so MDF = potBefore/(potBefore+bet) = 1/(1+x).
+    for (const a of aggro.filter(a => a.type === 'bet')) {
+      expect(a.mdf!).toBeCloseTo(1 / (1 + (a.betPct ?? 0)), 10)
+    }
+  })
+
+  test('all MDFs are valid frequencies in (0,1]', () => {
+    for (const a of aggro) {
+      expect(a.mdf!).toBeGreaterThan(0)
+      expect(a.mdf!).toBeLessThanOrEqual(1)
+    }
+  })
+
+  test('raise MDF is lower than the same-pct bet would be (raiser risks more)', () => {
+    // A raise imposes a stricter (lower) MDF than a bet of the same betPct, since
+    // the raiser commits R over a pot that already holds the bet being raised.
+    for (const a of aggro.filter(a => a.type === 'raise')) {
+      expect(a.mdf!).toBeLessThan(1 / (1 + (a.betPct ?? 0)) + 1e-9)
+    }
+  })
+})
+
 describe('node-walk is identical over rehydrated slim spots', () => {
   for (const f of FORMATIONS) {
     for (const mode of MODES) {
