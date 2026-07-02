@@ -92,7 +92,7 @@ export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'popula
   else { p.set('type', 'limpiso'); p.set('pos_a', sel.iso) }
   const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
-  const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string; notes: string | null }[] }
+  const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; notes: string | null }[] }
   return {
     hands: data.hands.map(rowToParsedHand),
     notes: data.hands.map(r => r.notes ?? ''),
@@ -121,11 +121,12 @@ export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter
 }
 
 // Drill-down: resolve hand ids to full ParsedHands, in the requested order.
+// raw_text is not shipped to the browser (nothing in the UI reads it).
 export async function fetchHandsByIds(ids: string[]): Promise<ParsedHand[]> {
   if (!ids.length) return []
   const res = await fetch(`/api/hands?view=hands-by-id&ids=${ids.map(encodeURIComponent).join(',')}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
-  const data = await res.json() as { hands: { id: string; parsed: Omit<ParsedHand, 'rawText'>; raw_text: string }[] }
+  const data = await res.json() as { hands: { id: string; parsed: Omit<ParsedHand, 'rawText'> }[] }
   const byId = new Map(data.hands.map(r => [r.id, rowToParsedHand(r)]))
   return ids.map(id => byId.get(id)).filter((h): h is ParsedHand => h !== undefined)
 }
@@ -151,7 +152,7 @@ export async function fetchGraphFromDb(game?: GameKind): Promise<GraphRow[]> {
 export async function fetchHandsFromDb(mine = false): Promise<{ hands: ParsedHand[]; notes: string[] }> {
   const res = await fetch(mine ? '/api/hands?view=mine' : '/api/hands', { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
-  const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string; notes: string | null }[] }
+  const data = await res.json() as { hands: { parsed: Omit<ParsedHand, 'rawText'>; notes: string | null }[] }
   return {
     hands: data.hands.map(rowToParsedHand),
     notes: data.hands.map(r => r.notes ?? ''),

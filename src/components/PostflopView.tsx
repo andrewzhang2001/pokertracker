@@ -10,6 +10,8 @@ import { fetchFlopSpots, fetchHandsByIds } from '../lib/handsApi'
 import { monthRange } from './MonthRange'
 import PlayingCard from './PlayingCard'
 import PostflopFilters from './PostflopFilters'
+import NotesPanel from './NotesPanel'
+import { postflopAnchor } from '../lib/noteAnchor'
 
 // Mode + board filters live in the URL query so they survive drill-down/back/refresh.
 // Formation + node come from the path (props).
@@ -376,8 +378,14 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
             </div>
           </div>
         )}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
           <PostflopFilters filter={filter} onChange={set} />
+          <NotesPanel
+            anchor={postflopAnchor(game, formationId, nodeId)}
+            widthClass="w-[38rem]"
+            rows={12}
+            minHeightClass="min-h-[10rem]"
+          />
         </div>
       </div>
 

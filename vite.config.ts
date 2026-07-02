@@ -44,38 +44,21 @@ function apiRoutes(env: Record<string, string>): Plugin {
         }
       })
 
-      server.middlewares.use('/api/share', async (req: IncomingMessage, res: ServerResponse) => {
+      // Same bridge for /api/notes — delegate to the real production handler.
+      server.middlewares.use('/api/notes', async (req: IncomingMessage, res: ServerResponse) => {
         res.setHeader('Content-Type', 'application/json')
         try {
-          const { Redis } = await import('@upstash/redis')
-          const redis = new Redis({ url: env.KV_REST_API_URL, token: env.KV_REST_API_TOKEN })
-
-          if (req.method === 'POST') {
-            const body = await new Promise<string>(resolve => {
-              let s = ''; req.on('data', (c: Buffer) => { s += c }); req.on('end', () => resolve(s))
-            })
-            const parsed = JSON.parse(body) as { rawText: string; handNotes?: string[]; notes?: string }
-            const handNotes = parsed.handNotes ?? (parsed.notes ? [parsed.notes] : [''])
-            const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
-            let id = ''
-            for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)]
-            await redis.set(id, { rawText: parsed.rawText, handNotes }, { ex: 7_776_000 })
-            res.end(JSON.stringify({ id }))
-            return
-          }
-
-          if (req.method === 'GET') {
-            const id = new URL(req.url!, 'http://localhost').searchParams.get('id')
-            if (!id) { res.statusCode = 400; res.end(JSON.stringify({ error: 'missing id' })); return }
-            const data = await redis.get<{ rawText: string; handNotes?: string[]; notes?: string }>(id)
-            if (!data) { res.statusCode = 404; res.end(JSON.stringify({ error: 'not found' })); return }
-            const handNotes = data.handNotes ?? (data.notes ? [data.notes] : [''])
-            res.end(JSON.stringify({ rawText: data.rawText, handNotes }))
-            return
-          }
-
-          res.statusCode = 405
-          res.end(JSON.stringify({ error: 'method not allowed' }))
+          const mod = await server.ssrLoadModule('/api/notes.ts')
+          const headers = new Headers()
+          for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v)
+          const method = req.method ?? 'GET'
+          const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(req)
+          const response: Response = await mod.default.fetch(
+            new Request(`http://localhost${req.url}`, { method, headers, body }),
+          )
+          res.statusCode = response.status
+          response.headers.forEach((v, k) => res.setHeader(k, v))
+          res.end(await response.text())
         } catch (e) {
           res.statusCode = 500
           res.end(JSON.stringify({ error: String(e) }))

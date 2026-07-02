@@ -36,24 +36,13 @@ interface Props {
   hands: ParsedHand[]
   handIndex: number
   handNotes: string[]
-  selected: Set<number>
-  onSelect: (idx: number, checked: boolean) => void
-  onSelectAll: () => void
   onClickHand: (idx: number) => void
-  onShareSelected: () => void
-  sharingSelected: boolean
-  copiedSelected: boolean
-  enableShare?: boolean
 }
 
 export default function HandSummaryPanel({
-  hands, handIndex, handNotes, selected, onSelect, onSelectAll, onClickHand,
-  onShareSelected, sharingSelected, copiedSelected, enableShare = true,
+  hands, handIndex, handNotes, onClickHand,
 }: Props) {
   const summaries = useMemo(() => hands.map((h, i) => computeSummary(h, i)), [hands])
-
-  const allSelected = hands.length > 0 && selected.size === hands.length
-  const someSelected = selected.size > 0
 
   // Track scroll position so we can show fade/chevron indicators instead of a
   // scrollbar (hidden via .no-scrollbar).
@@ -78,29 +67,8 @@ export default function HandSummaryPanel({
   return (
     <div className="w-60 border-r border-gray-800 flex flex-col bg-black/30 overflow-hidden shrink-0">
       {/* Header */}
-      <div className="flex items-center justify-between px-2 py-2 border-b border-gray-800 gap-2 shrink-0">
-        <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-400 select-none">
-          <input
-            type="checkbox"
-            checked={allSelected}
-            onChange={onSelectAll}
-            className="accent-yellow-500"
-          />
-          {selected.size > 0 ? `${selected.size} / ${hands.length}` : `${hands.length} hands`}
-        </label>
-        {enableShare && (
-          <button
-            onClick={onShareSelected}
-            disabled={!someSelected || sharingSelected}
-            className={`text-xs px-2 py-1 rounded-full border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              copiedSelected
-                ? 'border-green-600 text-green-400 bg-green-600/10'
-                : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
-            }`}
-          >
-            {sharingSelected ? '…' : copiedSelected ? 'Copied!' : 'Share'}
-          </button>
-        )}
+      <div className="flex items-center px-2 py-2 border-b border-gray-800 shrink-0">
+        <span className="text-xs text-gray-400 select-none">{hands.length} hands</span>
       </div>
 
       {/* Rows */}
@@ -108,7 +76,6 @@ export default function HandSummaryPanel({
         <div ref={scrollRef} className="absolute inset-0 overflow-y-auto no-scrollbar">
         {summaries.map(s => {
           const isActive = s.index === handIndex
-          const isChecked = selected.has(s.index)
           const netColor = s.participated
             ? s.netBB > 0 ? 'text-green-400' : s.netBB < 0 ? 'text-red-400' : 'text-gray-500'
             : 'text-gray-500'
@@ -119,13 +86,6 @@ export default function HandSummaryPanel({
               className={`flex items-center gap-1 px-2 py-1.5 cursor-pointer border-b border-gray-800/50 hover:bg-white/5 transition-colors ${isActive ? 'bg-yellow-500/10' : ''}`}
               onClick={() => onClickHand(s.index)}
             >
-              <input
-                type="checkbox"
-                checked={isChecked}
-                onChange={e => { e.stopPropagation(); onSelect(s.index, e.target.checked) }}
-                onClick={e => e.stopPropagation()}
-                className="accent-yellow-500 shrink-0 cursor-pointer"
-              />
               <div className="flex gap-0.5 shrink-0">
                 {s.holeCards
                   ? s.holeCards.map((c, i) => <PlayingCard key={i} card={c} tiny />)

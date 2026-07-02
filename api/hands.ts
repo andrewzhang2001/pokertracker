@@ -160,7 +160,7 @@ async function handler(req: Request): Promise<Response> {
         const combo = params.get('combo') // optional: drill to one grid cell
         const subject = params.get('subject') === 'hero' ? 'hero' : 'population'
         const rows = await sql`
-          SELECT parsed, raw_text, notes
+          SELECT id, parsed, notes
           FROM hands
           WHERE id IN (
             SELECT s.hand_id FROM preflop_spots s
@@ -232,11 +232,13 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ counts: rows })
       }
       // Drill-down hands by id (postflop "review these hands"). Order is restored
-      // client-side from the requested id list.
+      // client-side from the requested id list. raw_text is NOT shipped to the
+      // browser (it's the largest column per row and nothing in the UI reads it);
+      // it stays in the DB as the source of truth for backfills.
       if (view === 'hands-by-id') {
         const ids = (params.get('ids') ?? '').split(',').filter(Boolean)
         if (!ids.length) return Response.json({ hands: [] })
-        const rows = await sql`SELECT id, parsed, raw_text, notes FROM hands WHERE id = ANY(${ids}::text[])`
+        const rows = await sql`SELECT id, parsed, notes FROM hands WHERE id = ANY(${ids}::text[])`
         return Response.json({ hands: rows })
       }
       // Lightweight graph feed: YOUR own result numbers, oldest first. Optional
@@ -260,7 +262,7 @@ async function handler(req: Request): Promise<Response> {
       if (view === 'mine') {
         const lim = Math.min(Math.max(parseInt(params.get('limit') ?? '500', 10) || 500, 1), 5000)
         const rows = await sql`
-          SELECT parsed, raw_text, notes
+          SELECT parsed, notes
           FROM hands
           WHERE owner_id = ${ownerId}
           ORDER BY played_at DESC NULLS LAST, created_at DESC
@@ -269,7 +271,7 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ hands: rows })
       }
       const rows = await sql`
-        SELECT parsed, raw_text, notes
+        SELECT parsed, notes
         FROM hands
         ORDER BY played_at DESC NULLS LAST, created_at DESC
       `

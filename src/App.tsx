@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
-import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
 import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands, type DateRange } from './lib/handsApi'
 import { monthRange } from './components/MonthRange'
 import { dedupeAndSort } from './lib/mergeHands'
@@ -13,6 +12,7 @@ import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
+import { reportAnchor } from './lib/noteAnchor'
 import HandGrid from './components/HandGrid'
 import PostflopView from './components/PostflopView'
 import PostflopMenu from './components/PostflopMenu'
@@ -219,24 +219,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailKey])
 
-  // Decode shared link on first load — supports #id= (new) and #h= (legacy)
-  useEffect(() => {
-    const hash = window.location.hash
-    let promise: Promise<{ rawText: string; handNotes: string[] }> | null = null
-    if (hash.startsWith('#id=')) promise = loadShareById(hash.slice(4))
-    else if (hash.startsWith('#h=')) promise = decodeLegacyShare(hash.slice(3))
-    if (!promise) return
-    promise.then(({ rawText, handNotes }) => {
-      const parsed = parseHandHistories(rawText)
-      if (parsed.length) {
-        setImportHands(parsed)
-        setImportNotes(Array.from({ length: parsed.length }, (_, i) => handNotes[i] ?? ''))
-        navigate('/import', true)
-      }
-    }).catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   function loadText(text: string) {
     const parsed = dedupeAndSort(parseHandHistories(text))
     if (!parsed.length) {
@@ -247,7 +229,7 @@ export default function App() {
     setImportHands(parsed)
     setImportNotes(new Array(parsed.length).fill(''))
     setExportState('idle')
-    navigate('/import', true) // normalize URL (strip any share hash)
+    navigate('/import', true)
   }
 
   async function loadFiles(fileList: FileList | null) {
@@ -412,6 +394,7 @@ export default function App() {
       return (
         <HandGrid
           grid={reportGrid} sel={reportSel} subject={subject} kind={kind} title={title}
+          noteAnchor={reportAnchor(game, kind, subject, reportSel)}
           onBack={() => navigate(base)}
           onOpenCell={async combo => {
             const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo)
@@ -437,6 +420,7 @@ export default function App() {
       <ReportsView
         result={buildReport(detailHands, reportSel, solverTable, subject, kind)}
         headerExtra={mwToggle}
+        noteAnchor={reportAnchor(game, kind, subject, reportSel)}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
       />

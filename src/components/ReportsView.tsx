@@ -13,6 +13,9 @@ import { GameToggle } from './GameToggle'
 import { MonthRange } from './MonthRange'
 import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
+import NotesPanel from './NotesPanel'
+import { reportAnchor } from '../lib/noteAnchor'
+import { fetchNoteAnchors } from '../lib/notesApi'
 
 function fmtPct(n: number) {
   return (Number.isInteger(n) ? n : n.toFixed(1)) + '%'
@@ -124,6 +127,16 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
     return () => { cancelled = true }
   }, [kind])
 
+  // Which report tiles the user has notes on — one bulk fetch, refreshed when the
+  // subject changes (Reports vs Leakbuster keep separate notes). game/kind are in
+  // the anchor too, but they're derivable client-side so no refetch is needed.
+  const [notedAnchors, setNotedAnchors] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    let cancelled = false
+    fetchNoteAnchors().then(s => { if (!cancelled) setNotedAnchors(s) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [subject])
+
   // Build every report from the compact grid (with solver EVs once tables load).
   const previews = useMemo(() => {
     const m = new Map<string, ReportResult>()
@@ -134,6 +147,7 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
   const Tile = ({ sel, label }: { sel: ReportSel; label: string }) => {
     const r = previews.get(selKey(sel))!
     const hasEv = !!r.ev && r.ev.spots > 0 && r.total > 0
+    const hasNote = notedAnchors.has(reportAnchor(game, kind, subject, sel))
     return (
       <button
         onClick={() => onOpen(sel)}
@@ -141,7 +155,10 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
       >
         <div className="flex items-start justify-between gap-1">
           <div className="min-w-0">
-            <div className="text-white text-sm font-medium truncate">{label}</div>
+            <div className="flex items-center gap-1 min-w-0">
+              {hasNote && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 shrink-0" title="has notes" />}
+              <div className="text-white text-sm font-medium truncate">{label}</div>
+            </div>
             <div className="text-gray-500 text-xs mt-0.5">{r.total} spots</div>
           </div>
           {hasEv && <ArrowGlyph ev={r.ev!} size={34} />}
@@ -264,9 +281,10 @@ interface Props {
   onOpenHands: (hands: ParsedHand[], index: number) => void
   onBack: () => void
   headerExtra?: React.ReactNode
+  noteAnchor?: string
 }
 
-export default function ReportsView({ result, onOpenHands, onBack, headerExtra }: Props) {
+export default function ReportsView({ result, onOpenHands, onBack, headerExtra, noteAnchor }: Props) {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-gray-800 text-sm">
@@ -278,7 +296,10 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra }
         </button>
         <span className="text-white font-semibold">{result.title}</span>
         <span className="text-gray-500 text-xs">{result.subtitle}</span>
-        {headerExtra}
+        <div className="ml-auto flex items-center gap-3">
+          {headerExtra}
+          {noteAnchor && <NotesPanel anchor={noteAnchor} />}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-4">

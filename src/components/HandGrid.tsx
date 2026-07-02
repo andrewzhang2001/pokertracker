@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { comboActionMap, reportTitle, type ReportGridRow, type ReportSel, type Subject } from '../lib/reports'
 import type { TableKind } from '../lib/positionUtils'
+import NotesPanel from './NotesPanel'
 
 // NLHE report as the classic 13×13 starting-hand grid: pairs on the diagonal,
 // suited upper-right, offsuit lower-left. Each cell is filled by its action mix
@@ -23,7 +24,7 @@ const ACTIONS: { key: string; color: string }[] = [
   { key: 'fold', color: '#3b82f6' },  // blue
 ]
 
-export default function HandGrid({ grid, sel, subject, kind, title, onBack, onOpenCell }: {
+export default function HandGrid({ grid, sel, subject, kind, title, onBack, onOpenCell, noteAnchor }: {
   grid: ReportGridRow[]
   sel: ReportSel
   subject: Subject
@@ -31,6 +32,7 @@ export default function HandGrid({ grid, sel, subject, kind, title, onBack, onOp
   title: string
   onBack: () => void
   onOpenCell: (combo: string) => void
+  noteAnchor?: string
 }) {
   const map = useMemo(() => comboActionMap(grid, sel, subject, kind, 'nlhe'), [grid, sel, subject, kind])
   const [hover, setHover] = useState<string | null>(null)
@@ -75,6 +77,7 @@ export default function HandGrid({ grid, sel, subject, kind, title, onBack, onOp
         <span className="ml-auto text-xs text-gray-500 flex items-center gap-2">
           {ACTIONS.map(a => <span key={a.key} className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: a.color }} />{a.key}</span>)}
         </span>
+        {noteAnchor && <NotesPanel anchor={noteAnchor} />}
       </div>
 
       <div className="max-w-3xl w-full">

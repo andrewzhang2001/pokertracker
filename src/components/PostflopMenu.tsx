@@ -4,6 +4,8 @@ import {
   type FlopSpot, type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
 } from '../lib/postflop'
 import { fetchFlopSpots, fetchFlopCounts } from '../lib/handsApi'
+import { postflopAnchor } from '../lib/noteAnchor'
+import { fetchNoteAnchors } from '../lib/notesApi'
 import type { TableKind } from '../lib/positionUtils'
 import type { GameKind } from '../lib/games'
 import { KindToggle } from './KindToggle'
@@ -56,7 +58,7 @@ function RatioBar({ counts }: { counts: Record<string, number> }) {
 }
 
 // A node "bubble" — click to open the detail view for that line.
-function Bubble({ cell, label, onClick }: { cell: TreeCell; label: string; onClick: () => void }) {
+function Bubble({ cell, label, hasNote, onClick }: { cell: TreeCell; label: string; hasNote?: boolean; onClick: () => void }) {
   const dim = cell.total === 0
   return (
     <button
@@ -66,7 +68,10 @@ function Bubble({ cell, label, onClick }: { cell: TreeCell; label: string; onCli
         : 'border-gray-700 bg-gray-900 hover:border-yellow-500'}`}
     >
       <span className="text-xs font-medium text-gray-200 text-center leading-tight">{label}</span>
-      <span className={`text-[10px] ${dim ? 'text-gray-600' : 'text-gray-400'}`}>{cell.total}</span>
+      <span className={`text-[10px] flex items-center gap-1 ${dim ? 'text-gray-600' : 'text-gray-400'}`}>
+        {cell.total}
+        {hasNote && <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" title="has notes" />}
+      </span>
       <RatioBar counts={cell.actionCounts} />
     </button>
   )
@@ -77,8 +82,8 @@ const LINE_ORDER: Record<string, number> = { xx: 0, xbc: 1, bc: 2 }
 
 // One player's bubbles, grouped into columns by depth (col 0 = after one action,
 // col 1 = after a raise); bubbles within a column stack vertically.
-function SideColumns({ cells, pfa, onOpen, end }: {
-  cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void; end?: boolean
+function SideColumns({ cells, pfa, onOpen, noted, end }: {
+  cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void; noted?: (id: string) => boolean; end?: boolean
 }) {
   const cols = [...new Set(cells.map(c => c.col))].sort((a, b) => a - b)
   return (
@@ -86,7 +91,7 @@ function SideColumns({ cells, pfa, onOpen, end }: {
       {cols.map(col => (
         <div key={col} className="flex flex-col gap-2">
           {cells.filter(c => c.col === col).map(c => (
-            <Bubble key={c.id} cell={c} label={nodeLabel(c.id, pfa)} onClick={() => onOpen(c.id)} />
+            <Bubble key={c.id} cell={c} label={nodeLabel(c.id, pfa)} hasNote={noted?.(c.id)} onClick={() => onOpen(c.id)} />
           ))}
         </div>
       ))}
@@ -95,8 +100,8 @@ function SideColumns({ cells, pfa, onOpen, end }: {
 }
 
 // One street row: a left-hand label, then OOP columns on the left / IP on the right.
-function NodeRow({ label, sub, cells, pfa, onOpen }: {
-  label: string; sub?: string; cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void
+function NodeRow({ label, sub, cells, pfa, onOpen, noted }: {
+  label: string; sub?: string; cells: TreeCell[]; pfa: FlopActor; onOpen: (id: string) => void; noted?: (id: string) => boolean
 }) {
   return (
     <div className="flex items-start gap-3">
@@ -105,8 +110,8 @@ function NodeRow({ label, sub, cells, pfa, onOpen }: {
         {sub && <div className="text-[10px] text-gray-600">{sub}</div>}
       </div>
       <div className="flex-1 grid grid-cols-2 gap-3">
-        <SideColumns cells={cells.filter(c => c.acting === 'oop')} pfa={pfa} onOpen={onOpen} />
-        <SideColumns cells={cells.filter(c => c.acting === 'ip')} pfa={pfa} onOpen={onOpen} end />
+        <SideColumns cells={cells.filter(c => c.acting === 'oop')} pfa={pfa} onOpen={onOpen} noted={noted} />
+        <SideColumns cells={cells.filter(c => c.acting === 'ip')} pfa={pfa} onOpen={onOpen} noted={noted} end />
       </div>
     </div>
   )
@@ -135,6 +140,16 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
   // the active board filter + mode + month range.
   const [counts, setCounts] = useState<Record<string, number>>({})
   useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo, game])
+
+  // Which nodes the user has notes on — one bulk fetch (postflop notes are keyed
+  // by game+formation+node, no mode/filter, so no refetch on those toggles).
+  const [notedAnchors, setNotedAnchors] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    let cancelled = false
+    fetchNoteAnchors().then(s => { if (!cancelled) setNotedAnchors(s) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+  const noted = (nodeId: string) => notedAnchors.has(postflopAnchor(game, formationId, nodeId))
 
   const tree = useMemo(() => formationTree(spots, formationId, mode, filter), [spots, formationId, mode, filter])
   // Order lines most-passive → most-aggressive (by first action): check-check,
@@ -212,7 +227,7 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
               <div className="text-xs uppercase tracking-wide text-gray-500">Flop</div>
               <StreetFilters filter={filter} onChange={set} street="flop" />
             </div>
-            <NodeRow label="Flop" cells={tree.flop} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
+            <NodeRow label="Flop" cells={tree.flop} pfa={pfa} onOpen={id => onOpen(formationId, id)} noted={noted} />
           </div>
 
           {/* Turn — pick a flop line, then see that line's turn nodes */}
@@ -240,7 +255,7 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
               })}
             </div>
             {selectedLine && (
-              <NodeRow label="Turn" cells={selectedLine.turn} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
+              <NodeRow label="Turn" cells={selectedLine.turn} pfa={pfa} onOpen={id => onOpen(formationId, id)} noted={noted} />
             )}
           </div>
 
@@ -272,7 +287,7 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
                 })}
               </div>
               {selectedTurnLine && (
-                <NodeRow label="River" cells={selectedTurnLine.river} pfa={pfa} onOpen={id => onOpen(formationId, id)} />
+                <NodeRow label="River" cells={selectedTurnLine.river} pfa={pfa} onOpen={id => onOpen(formationId, id)} noted={noted} />
               )}
             </div>
           )}

@@ -53,7 +53,9 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
   }
 }
 
-// Reconstruct a ParsedHand from a stored row (parsed JSONB + raw_text column).
-export function rowToParsedHand(row: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string }): ParsedHand {
-  return { ...row.parsed, rawText: row.raw_text }
+// Reconstruct a ParsedHand from a stored row (parsed JSONB [+ raw_text]). The
+// list queries omit raw_text to save egress — nothing in the UI reads it (it
+// stays in the DB as the backfill source of truth), so rawText falls back to ''.
+export function rowToParsedHand(row: { parsed: Omit<ParsedHand, 'rawText'>; raw_text?: string }): ParsedHand {
+  return { ...row.parsed, rawText: row.raw_text ?? '' }
 }
