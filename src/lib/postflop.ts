@@ -465,6 +465,9 @@ export interface ClassRow {
 // underfold signal is (defends/n) − (sumMdf/n): negative ⇒ overfolding.
 export interface MdfCell { n: number; sumMdf: number; defends: number; folds: number }
 export interface MdfSummary { buckets: [MdfCell, MdfCell, MdfCell]; all: MdfCell }
+// One reaching hand at a node, with the acting player's cards/class + their action
+// — the per-hand table rows (center list + side-by-side compare panel).
+export interface NodeSpotRow { spot: FlopSpot; action: FlopActType; betPct?: number; cards: ParsedCard[] | null; klass?: HandClass }
 export interface NodeResult {
   label: string
   acting: FlopActor
@@ -473,6 +476,7 @@ export interface NodeResult {
   rows: ClassRow[]                        // hand-class breakdown (classified spots only)
   handIds: string[]                       // reaching hands (for drill-down — fetched by id)
   mdf?: MdfSummary                        // present only when this node faces a bet/raise
+  list?: NodeSpotRow[]                    // per-hand rows (only when built withList)
 }
 
 // Strongest → weakest. Interleaves the PLO ladder (overpair/top/middle/bottom/
@@ -536,7 +540,7 @@ function reaches(s: FlopSpot, node: NodeDef): boolean {
     pathMatches(s.riverActions, rp) && s.riverActions[rp.length]?.actor === node.acting
 }
 
-function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
+function nodeBreakdown(spots: FlopSpot[], node: NodeDef, withList = false): NodeResult {
   const reaching = spots.filter(s => reaches(s, node))
   const di = decisionIndex(node)
 
@@ -581,10 +585,17 @@ function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
     const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => subRank(a.label) - subRank(b.label))
     return { key: k, counts: t.counts, sizes: t.sizes, total: sum(t.counts), sub }
   })
+  const list = withList
+    ? reaching.map(s => ({
+        spot: s, action: streamOf(s, node)[di].type, betPct: streamOf(s, node)[di].betPct,
+        cards: cardsOf(s, node.acting), klass: classOf(s, node),
+      }))
+    : undefined
   return {
     label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows,
     handIds: reaching.map(s => s.handId),
     mdf: facesBet && mdfSum.all.n > 0 ? mdfSum : undefined,
+    list,
   }
 }
 
@@ -743,12 +754,12 @@ export interface ScenarioReport {
   prior?: NodeResult
   responses: NodeResult[]
   facedRange?: RangeComp   // the villain range you're facing (composition), when facing an action
-  // hands reaching your node, with YOUR cards/class
-  listSpots: { spot: FlopSpot; action: FlopActType; betPct?: number; cards: ParsedCard[] | null; klass?: HandClass }[]
+  listSpots: NodeSpotRow[] // hands reaching your node, with YOUR cards/class
 }
 
 export function formationReport(
-  spots: FlopSpot[], formationId: string, nodeId: string, mode: PostflopMode, filter: PostflopFilter, facedBet: BetBucket = 'all',
+  spots: FlopSpot[], formationId: string, nodeId: string, mode: PostflopMode, filter: PostflopFilter,
+  facedBet: BetBucket = 'all', madeBet: BetBucket = 'all',
 ): ScenarioReport {
   const formation = FORMATIONS.find(f => f.id === formationId) ?? FORMATIONS[0]
   const node = NODE_BY_ID.get(nodeId) ?? NODES[0]
@@ -757,6 +768,14 @@ export function formationReport(
   // Bet-size filter: keep only hands where the bet you face is that size, so the
   // preceding/decision/response panels all narrow to that size together.
   if (facedBet !== 'all') base = base.filter(s => reaches(s, node) && sizeBucketOf(facedBetPct(s, node)) === facedBet)
+  // Made-bet filter (nodes where the acting player bets, i.e. first-to-act / vs a
+  // check): keep only spots where THEIR bet at this node was that size, so you can
+  // read the betting-range construction one size at a time.
+  if (madeBet !== 'all') base = base.filter(s => {
+    if (!reaches(s, node)) return false
+    const act = streamOf(s, node)[decisionIndex(node)]
+    return act?.type === 'bet' && sizeBucketOf(act.betPct) === madeBet
+  })
 
   // Per-DECISION subject: in 'hero' mode the acting player is you; in
   // 'population' mode it's anyone but you (so we keep opponents' decisions even
@@ -766,18 +785,16 @@ export function formationReport(
   const villSeat = otherSeat(node.acting)
   const villainSpots = base.filter(s => !actingIsMe(s, villSeat))
 
-  const di = decisionIndex(node)
-  const listSpots = heroSpots
-    .filter(s => reaches(s, node))
-    .map(s => ({ spot: s, action: streamOf(s, node)[di].type, betPct: streamOf(s, node)[di].betPct, cards: cardsOf(s, node.acting), klass: classOf(s, node) }))
-
+  // withList: every panel carries its per-hand rows so the UI can pop a
+  // side-by-side compare table for any of them (hero / prior / responses).
+  const heroResult = nodeBreakdown(heroSpots, heroNode, true)
   return {
-    heroNode: nodeBreakdown(heroSpots, heroNode),
-    prior: prior ? nodeBreakdown(villainSpots, prior) : undefined,
-    responses: responses.map(r => nodeBreakdown(villainSpots, r)),
+    heroNode: heroResult,
+    prior: prior ? nodeBreakdown(villainSpots, prior, true) : undefined,
+    responses: responses.map(r => nodeBreakdown(villainSpots, r, true)),
     // The range you face = the opponent's cards over the spots reaching your node.
     facedRange: prior ? rangeComposition(base, node, villSeat) : undefined,
-    listSpots,
+    listSpots: heroResult.list ?? [],
   }
 }
 

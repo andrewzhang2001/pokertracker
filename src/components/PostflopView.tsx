@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand, ParsedCard } from '../lib/types'
 import {
   formationReport, FORMATIONS, getNode, nodeLabel, nodeFacesBet, parseFilter, writeFilter,
-  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp, type MdfSummary, type MdfCell,
+  type FlopSpot, type PostflopFilter, type PostflopMode, type ClassRow, type NodeResult, type FlopActType, type SizeBuckets, type BetBucket, type RangeComp, type MdfSummary, type MdfCell, type NodeSpotRow,
 } from '../lib/postflop'
 import type { HandClass } from '../lib/ploEval'
 import type { GameKind } from '../lib/games'
@@ -114,6 +114,37 @@ function MdfPanel({ mdf }: { mdf: MdfSummary }) {
   )
 }
 
+// The per-hand table (hand · board · action · class). Shared by the center
+// decision list and the side-by-side compare panel so they line up exactly.
+function HandsTable({ rows, handLabel, street, boardOf, onRow, header, compact }: {
+  rows: NodeSpotRow[]; handLabel: string; street: string
+  boardOf: (s: NodeSpotRow['spot']) => ParsedCard[]; onRow: (i: number) => void; header?: React.ReactNode; compact?: boolean
+}) {
+  // Compact variant fits the table inside a w-80 side column (no layout shift).
+  const wHand = compact ? 'w-24' : 'w-28', wBoard = compact ? 'w-28' : 'w-32'
+  const wAct = compact ? 'w-14' : 'w-16', gap = compact ? 'gap-2' : 'gap-3'
+  return (
+    <div className="border border-gray-800 rounded-lg bg-black/20">
+      {header}
+      <div className={`px-3 py-2 border-b border-gray-800 text-xs text-gray-500 flex ${gap}`}>
+        <span className={wHand}>{handLabel}</span>
+        <span className={wBoard}>{street}</span>
+        <span className={wAct}>action</span>
+        <span className="min-w-0 flex-1">hand class</span>
+      </div>
+      {rows.map((x, i) => (
+        <button key={`${x.spot.handId}-${i}`} onClick={() => onRow(i)}
+          className={`w-full flex items-center ${gap} px-3 py-1.5 hover:bg-white/5 transition-colors text-left text-xs`}>
+          <span className={`${wHand} flex gap-0.5`}>{x.cards?.map((c, j) => <PlayingCard key={j} card={c} tiny />)}</span>
+          <span className={`${wBoard} flex gap-0.5`}>{boardOf(x.spot).map((c, j) => <PlayingCard key={j} card={c} tiny />)}</span>
+          <span className={`${wAct} ${actionText(x.action)}`}>{x.action}{x.betPct !== undefined ? ` ${pct(x.betPct * 100)}` : ''}</span>
+          <span className="min-w-0 flex-1 text-gray-300 truncate" title={x.klass?.label}>{x.klass?.label ?? '—'}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export type Sel = { made: string; sub?: string }
 
 // Drop the redundant parent-category prefix from a sub-row label under its row —
@@ -123,14 +154,19 @@ export type Sel = { made: string; sub?: string }
 const subLabel = (rowKey: string, sub: string) =>
   sub === rowKey ? 'no draw' : sub.startsWith(rowKey + ' · ') ? sub.slice(rowKey.length + 3) : sub
 
-function NodeChart({ node, onView, selected, onSelect }: {
-  node: NodeResult; onView?: () => void; selected?: Sel | null; onSelect?: (s: Sel) => void
+function NodeChart({ node, onView, selected, onSelect, cumulative }: {
+  node: NodeResult; onView?: () => void; selected?: Sel | null; onSelect?: (s: Sel) => void; cumulative?: boolean
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (k: string) => setOpen(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
   const segs = segmentsOf(node.rows)
   const rowSel = (k: string) => !!selected && selected.made === k && !selected.sub
   const subSel = (k: string, sub: string) => !!selected && selected.made === k && selected.sub === sub
+  // Cumulative % of the shown range from the strongest class down (rows are already
+  // ordered strongest→weakest), mirroring the "range you're facing" top% column.
+  const grand = node.rows.reduce((a, r) => a + r.total, 0) || 1
+  const cumByKey = new Map<string, number>()
+  { let run = 0; for (const r of node.rows) { run += r.total; cumByKey.set(r.key, run / grand) } }
   return (
     <div className="mb-4">
       <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 flex justify-between items-baseline">
@@ -141,6 +177,13 @@ function NodeChart({ node, onView, selected, onSelect }: {
       </div>
       {node.rows.length === 0 ? <p className="text-gray-600 text-xs">no sample</p> : (
         <div className="space-y-1">
+          {cumulative && (
+            <div className="w-full flex items-center gap-2 text-[10px] text-gray-600 px-1">
+              <span className="w-3" />
+              <div className="flex-1 flex items-center gap-2 min-w-0"><span className="w-36" /><span className="flex-1 text-right pr-1">action</span><span className="w-8 text-right">n</span></div>
+              <span className="w-10 text-right">top%</span>
+            </div>
+          )}
           {node.rows.map(row => {
             const expandable = row.sub.length > 1
             const isOpen = open.has(row.key)
@@ -155,6 +198,7 @@ function NodeChart({ node, onView, selected, onSelect }: {
                     <StackedBar counts={row.counts} sizes={row.sizes} segments={segs} />
                     <span className="w-8 text-right text-gray-500">{row.total}</span>
                   </button>
+                  {cumulative && <span className="w-10 text-right text-gray-400" title="share of this range, this class or stronger">{Math.round((cumByKey.get(row.key) ?? 0) * 100)}%</span>}
                 </div>
                 {isOpen && row.sub.map(s => {
                   const inner = (
@@ -236,9 +280,50 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
   // Bet-size filter (only when facing a bet): narrows all panels to that faced size.
   const facesBet = node ? nodeFacesBet(node) : false
   const [facedBet, setFacedBet] = useState<BetBucket>('all')
-  useEffect(() => { setFacedBet('all') }, [nodeId, formationId])
-  const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter, facesBet ? facedBet : 'all'), [spots, formationId, nodeId, mode, filter, facesBet, facedBet])
+  // Made-bet filter (nodes where the acting player bets — first-to-act / vs check):
+  // slice the range by the size THEY bet, to read betting-range construction by size.
+  const canBet = !!node && !facesBet
+  const [madeBet, setMadeBet] = useState<BetBucket>('all')
+  useEffect(() => { setFacedBet('all'); setMadeBet('all') }, [nodeId, formationId])
+  const r = useMemo(() => formationReport(spots, formationId, nodeId, mode, filter, facesBet ? facedBet : 'all', canBet ? madeBet : 'all'), [spots, formationId, nodeId, mode, filter, facesBet, facedBet, canBet, madeBet])
   const openHands = async (ids: string[], index: number) => onOpenHands(await fetchHandsByIds(ids), index)
+
+  // Side-by-side compare: a "review" button opens that panel's hand table on the
+  // right instead of the replayer. Stored as a reference into `r` (not a snapshot)
+  // so it stays live as filters change; indices are stable per node.
+  type CompareSel = { kind: 'prior' } | { kind: 'response'; i: number }
+  const [compareSel, setCompareSel] = useState<CompareSel | null>(null)
+  const [compareSelClass, setCompareSelClass] = useState<Sel | null>(null)
+  useEffect(() => { setCompareSel(null); setCompareSelClass(null) }, [nodeId, formationId])
+  const compareNode: NodeResult | undefined =
+    compareSel?.kind === 'response' ? r.responses[compareSel.i]
+    : compareSel?.kind === 'prior' ? r.prior : undefined
+  // The reviewed panel's hands as a table, dropped underneath its own section —
+  // filterable by hand class (click a class in the chart) like the middle list.
+  const renderCompare = (n: NodeResult) => {
+    const list = n.list ?? []
+    const cShown = compareSelClass ? list.filter(x => topKey(x.klass) === compareSelClass.made && (!compareSelClass.sub || x.klass?.sub === compareSelClass.sub)) : list
+    const ids = cShown.map(x => x.spot.handId)
+    return (
+      <div className="mt-3">
+        <div className="text-xs uppercase tracking-wide text-gray-500 mb-1 flex items-center gap-2">
+          <span className="truncate">hands · {n.label}</span>
+          <span className="text-gray-600 normal-case shrink-0">{cShown.length}</span>
+          <button onClick={() => setCompareSel(null)} className="ml-auto text-gray-500 hover:text-white shrink-0">close ✕</button>
+        </div>
+        {list.length > 0
+          ? <HandsTable rows={cShown} handLabel="villain hand" street={street} boardOf={boardOf} onRow={i => openHands(ids, i)} compact
+              header={compareSelClass && (
+                <div className="px-3 py-1.5 border-b border-gray-800 text-xs flex items-center gap-2 bg-yellow-500/5">
+                  <span className="text-gray-400">showing</span>
+                  <span className="text-yellow-300 truncate">{compareSelClass.sub ?? compareSelClass.made}</span>
+                  <button onClick={() => setCompareSelClass(null)} className="ml-auto text-gray-500 hover:text-white shrink-0">clear ✕</button>
+                </div>
+              )} />
+          : <p className="text-gray-600 text-xs">no hands in sample</p>}
+      </div>
+    )
+  }
 
   // Click a category/subcategory in your decision chart to filter the hands list.
   const [sel, setSel] = useState<Sel | null>(null)
@@ -281,18 +366,28 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
             </div>
           </div>
         )}
+        {canBet && (
+          <div className="flex items-center gap-1 text-xs text-gray-500">
+            <span>bet size</span>
+            <div className="flex rounded-full border border-gray-700 overflow-hidden">
+              {([['all', 'all'], ['sm', '<40%'], ['md', '40–70%'], ['lg', '>70%']] as [BetBucket, string][]).map(([b, l]) => (
+                <button key={b} onClick={() => setMadeBet(b)} className={`px-2.5 py-1 transition-colors ${madeBet === b ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>{l}</button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="ml-auto">
           <PostflopFilters filter={filter} onChange={set} />
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar p-4">
-        <div className="flex gap-6 max-w-7xl mx-auto items-start flex-wrap">
+        <div className="flex gap-6 mx-auto items-start flex-wrap max-w-[1600px]">
           {/* Left: the villain range you're facing (composition, not their action).
               Bar color: green vs a check, red vs a bet, or the size color when a
               specific faced size is selected (<40 yellow / 40–70 orange / >70 red). */}
           {r.facedRange && (
-            <div className="w-80 shrink-0">
+            <div className="flex-[4] min-w-[20rem]">
               <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">← Facing (villain)</div>
               <FacingRange
                 comp={r.facedRange}
@@ -300,52 +395,51 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
                   : facedBet === 'sm' ? 'bg-yellow-500/80'
                   : facedBet === 'md' ? 'bg-orange-500/80'
                   : 'bg-red-500/75'}
-                onView={() => openHands(r.facedRange!.handIds, 0)}
+                onView={() => { setCompareSel(r.prior ? { kind: 'prior' } : null); setCompareSelClass(null) }}
               />
+              {compareSel?.kind === 'prior' && r.prior && renderCompare(r.prior)}
             </div>
           )}
 
           {/* Center: YOUR decision + hands */}
-          <div className="flex-1 min-w-[360px]">
+          <div className="flex-[5] min-w-[24rem]">
             <div className="text-xs text-yellow-300/80 mb-2">{mode === 'hero' ? 'Your decision — range & action' : 'Field — range & action'}</div>
-            <NodeChart node={r.heroNode} selected={sel} onSelect={pickSel} />
+            <NodeChart node={r.heroNode} selected={sel} onSelect={pickSel}
+              cumulative={(facesBet && facedBet !== 'all') || (canBet && madeBet !== 'all')} />
 
             {r.listSpots.length > 0 && (
-              <div className="border border-gray-800 rounded-lg bg-black/20 mt-3">
-                {sel && (
-                  <div className="px-3 py-1.5 border-b border-gray-800 text-xs flex items-center gap-2 bg-yellow-500/5">
-                    <span className="text-gray-400">showing</span>
-                    <span className="text-yellow-300">{sel.sub ?? sel.made}</span>
-                    <span className="text-gray-600">· {shown.length} hands</span>
-                    <button onClick={() => setSel(null)} className="ml-auto text-gray-500 hover:text-white">clear ✕</button>
-                  </div>
-                )}
-                <div className="px-3 py-2 border-b border-gray-800 text-xs text-gray-500 flex gap-3">
-                  <span className="w-28">{mode === 'hero' ? 'your hand' : 'hand'}</span>
-                  <span className="w-32">{street}</span>
-                  <span className="w-16">action</span>
-                  <span className="min-w-0 flex-1">hand class</span>
-                </div>
-                {shown.map((x, i) => (
-                  <button key={x.spot.handId} onClick={() => openHands(handList, i)}
-                    className="w-full flex items-center gap-3 px-3 py-1.5 hover:bg-white/5 transition-colors text-left text-xs">
-                    <span className="w-28 flex gap-0.5">{x.cards?.map((c, j) => <PlayingCard key={j} card={c} tiny />)}</span>
-                    <span className="w-32 flex gap-0.5">
-                      {boardOf(x.spot).map((c, j) => <PlayingCard key={j} card={c} tiny />)}
-                    </span>
-                    <span className={`w-16 ${actionText(x.action)}`}>{x.action}{x.betPct !== undefined ? ` ${pct(x.betPct * 100)}` : ''}</span>
-                    <span className="min-w-0 flex-1 text-gray-300 truncate" title={x.klass?.label}>{x.klass?.label ?? '—'}</span>
-                  </button>
-                ))}
+              <div className="mt-3">
+                <HandsTable
+                  rows={shown} handLabel={mode === 'hero' ? 'your hand' : 'hand'} street={street} boardOf={boardOf}
+                  onRow={i => openHands(handList, i)}
+                  header={sel && (
+                    <div className="px-3 py-1.5 border-b border-gray-800 text-xs flex items-center gap-2 bg-yellow-500/5">
+                      <span className="text-gray-400">showing</span>
+                      <span className="text-yellow-300">{sel.sub ?? sel.made}</span>
+                      <span className="text-gray-600">· {shown.length} hands</span>
+                      <button onClick={() => setSel(null)} className="ml-auto text-gray-500 hover:text-white">clear ✕</button>
+                    </div>
+                  )}
+                />
               </div>
             )}
           </div>
 
-          {/* Right: resulting villain responses (population) */}
+          {/* Right: resulting villain responses (population). Review drops that
+              response's hands as a table directly underneath this section. */}
           {r.responses.length > 0 && (
-            <div className="w-80 shrink-0">
+            <div className="flex-[4] min-w-[20rem]">
               <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Resulting (villain, pop) →</div>
-              {r.responses.map((n, i) => <NodeChart key={i} node={n} onView={() => openHands(n.handIds, 0)} />)}
+              {r.responses.map((n, i) => (
+                <NodeChart key={i} node={n}
+                  onView={() => { setCompareSel({ kind: 'response', i }); setCompareSelClass(null) }}
+                  selected={compareSel?.kind === 'response' && compareSel.i === i ? compareSelClass : null}
+                  onSelect={s => {
+                    setCompareSel({ kind: 'response', i })
+                    setCompareSelClass(cur => (compareSel?.kind === 'response' && compareSel.i === i && cur && cur.made === s.made && cur.sub === s.sub) ? null : s)
+                  }} />
+              ))}
+              {compareSel?.kind === 'response' && compareNode && renderCompare(compareNode)}
             </div>
           )}
         </div>

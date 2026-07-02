@@ -100,11 +100,16 @@ describe('node-walk is identical over rehydrated slim spots', () => {
         for (const mode of MODES) {
           const a = formationReport(fullSpots, f.id, nodeId, mode, EMPTY_FILTER)
           const b = formationReport(slimSpots, f.id, nodeId, mode, EMPTY_FILTER)
-          expect(b.heroNode).toEqual(a.heroNode)
-          expect(b.prior).toEqual(a.prior)
-          expect(b.responses).toEqual(a.responses)
-          // listSpots carries the spot object; compare the fields the UI reads
-          // (the slim spot has no `hand`, so don't compare the raw spot).
+          // `list` carries raw spot objects (slim spots lack `hand`), so strip it
+          // from the node compare and check its UI-visible fields separately.
+          type NR = NonNullable<typeof a.prior>
+          const bare = (n?: NR) => n && { ...n, list: undefined }
+          const projList = (l?: NR['list']) => (l ?? []).map(x => ({ handId: x.spot.handId, action: x.action, betPct: x.betPct, cards: x.cards, klass: x.klass }))
+          const cmp = (bn?: NR, an?: NR) => { expect(bare(bn)).toEqual(bare(an)); expect(projList(bn?.list)).toEqual(projList(an?.list)) }
+          cmp(b.heroNode, a.heroNode)
+          cmp(b.prior, a.prior)
+          b.responses.forEach((n, i) => cmp(n, a.responses[i]))
+          expect(b.responses.length).toEqual(a.responses.length)
           const proj = (r: typeof a) => r.listSpots.map(x => ({ handId: x.spot.handId, action: x.action, betPct: x.betPct, cards: x.cards, klass: x.klass }))
           expect(proj(b)).toEqual(proj(a))
         }
