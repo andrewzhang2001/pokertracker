@@ -20,50 +20,35 @@ function apiRoutes(env: Record<string, string>): Plugin {
       process.env.DATABASE_URL_UNPOOLED ||= env.DATABASE_URL_UNPOOLED
       process.env.CLERK_SECRET_KEY ||= env.CLERK_SECRET_KEY
 
-      // Delegate /api/hands to the REAL production handler instead of a parallel
-      // reimplementation (which silently drifted and broke reports/postflop in
-      // dev). ssrLoadModule transpiles the TS module; we bridge Node req/res to
-      // the Web Request/Response the handler expects.
-      server.middlewares.use('/api/hands', async (req: IncomingMessage, res: ServerResponse) => {
-        res.setHeader('Content-Type', 'application/json')
-        try {
-          const mod = await server.ssrLoadModule('/api/hands.ts')
-          const headers = new Headers()
-          for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v)
-          const method = req.method ?? 'GET'
-          const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(req)
-          const response: Response = await mod.default.fetch(
-            new Request(`http://localhost${req.url}`, { method, headers, body }),
-          )
-          res.statusCode = response.status
-          response.headers.forEach((v, k) => res.setHeader(k, v))
-          res.end(await response.text())
-        } catch (e) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ error: String(e) }))
-        }
-      })
+      // Delegate each /api/* route to its REAL production handler instead of a
+      // parallel reimplementation (which silently drifted and broke dev before).
+      // ssrLoadModule transpiles the TS module; we bridge Node req/res to the Web
+      // Request/Response the handler expects. Every api/*.ts endpoint must be
+      // registered here or it 404s in dev.
+      const bridge = (route: string, modPath: string) =>
+        server.middlewares.use(route, async (req: IncomingMessage, res: ServerResponse) => {
+          res.setHeader('Content-Type', 'application/json')
+          try {
+            const mod = await server.ssrLoadModule(modPath)
+            const headers = new Headers()
+            for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v)
+            const method = req.method ?? 'GET'
+            const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(req)
+            const response: Response = await mod.default.fetch(
+              new Request(`http://localhost${req.url}`, { method, headers, body }),
+            )
+            res.statusCode = response.status
+            response.headers.forEach((v, k) => res.setHeader(k, v))
+            res.end(await response.text())
+          } catch (e) {
+            res.statusCode = 500
+            res.end(JSON.stringify({ error: String(e) }))
+          }
+        })
 
-      // Same bridge for /api/notes — delegate to the real production handler.
-      server.middlewares.use('/api/notes', async (req: IncomingMessage, res: ServerResponse) => {
-        res.setHeader('Content-Type', 'application/json')
-        try {
-          const mod = await server.ssrLoadModule('/api/notes.ts')
-          const headers = new Headers()
-          for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers.set(k, v)
-          const method = req.method ?? 'GET'
-          const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(req)
-          const response: Response = await mod.default.fetch(
-            new Request(`http://localhost${req.url}`, { method, headers, body }),
-          )
-          res.statusCode = response.status
-          response.headers.forEach((v, k) => res.setHeader(k, v))
-          res.end(await response.text())
-        } catch (e) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ error: String(e) }))
-        }
-      })
+      bridge('/api/hands', '/api/hands.ts')
+      bridge('/api/notes', '/api/notes.ts')
+      bridge('/api/profiles', '/api/profiles.ts')
     },
   }
 }

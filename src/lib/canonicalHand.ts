@@ -32,6 +32,10 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
   const hero = hand.players.find(p => p.isMe)
   const stat = handStat(hand)
   const { rawText, ...parsedNoRaw } = hand
+  // Drop the transient per-seat raw identities before persisting — the shared
+  // `parsed` blob (served to population views) must stay anonymous. Seat→profile
+  // mapping is kept separately in the owner-scoped profile tables.
+  const parsed = { ...parsedNoRaw, players: parsedNoRaw.players.map(({ sourceName, ...p }) => p) }
   return {
     id: hand.handId,
     site: hand.site,
@@ -47,7 +51,7 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
     rake_bb: stat?.rake ?? null,
     pot_type: analysis.potType,
     analysis,
-    parsed: parsedNoRaw,
+    parsed,
     raw_text: rawText,
     notes: notes?.trim() ? notes.trim() : null,
   }

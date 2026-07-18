@@ -580,9 +580,15 @@ describe('RFI reports (population, by position)', () => {
     expect(vs3betSpots(h).length).toBe(0)
   })
 
-  test('vs3betSpots: a sub-10bb 3-bet is excluded', () => {
-    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 8], ['fold', 5], ['fold', 6], ['fold', 1]])
-    expect(vs3betSpots(h).length).toBe(0)
+  test('vs3betSpots: a sub-6bb 3-bet is excluded; ≥6bb counts with its size', () => {
+    // PLO now captures 3-bets ≥6bb (the loosest size bucket); the report filter
+    // slices from there. A 5bb 3-bet is still below the floor.
+    const small = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 5], ['fold', 5], ['fold', 6], ['fold', 1]])
+    expect(vs3betSpots(small).length).toBe(0)
+    const mid = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 8], ['fold', 5], ['fold', 6], ['fold', 1]])
+    const spots = vs3betSpots(mid)
+    expect(spots.length).toBe(1)
+    expect(spots[0].threeBetBB).toBe(8)
   })
 
   test('vs3betReport requires BOTH opener & 3-bettor 75bb+', () => {

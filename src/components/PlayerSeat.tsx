@@ -6,6 +6,8 @@ interface Props {
   posLabel: string
   bigBlind: number
   showHoleCards: boolean
+  holeCount: number        // cards per hand for this game (PLO 4 / NLHE 2) — the
+                           // face-down back count when a live seat's cards are unknown
   made?: string | null     // top-level made-hand class (postflop), if known
   equity?: number          // postflop showdown equity (0..1), if known
   x: number
@@ -17,12 +19,20 @@ function bbStr(amount: number, bigBlind: number): string {
   return (Number.isInteger(v) ? String(v) : v.toFixed(1)) + 'bb'
 }
 
-export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, made, equity, x, y }: Props) {
+export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, holeCount, made, equity, x, y }: Props) {
   const borderColor = player.isMe
     ? 'border-yellow-400'
     : player.folded
     ? 'border-gray-700'
     : 'border-slate-500'
+
+  // Face-up real cards only for revealed hands (hero / shown mucks) with the
+  // toggle on. Every live (unfolded) seat otherwise shows face-down backs — even
+  // when its holding is unknown — so an observed table still looks like a table
+  // instead of empty seats. A folded seat with no reveal shows no cards.
+  const showFace = !!player.holeCards && showHoleCards
+  const showBack = !showFace && !player.folded
+  const backCount = player.holeCards?.length ?? holeCount
 
   return (
     <div
@@ -30,12 +40,14 @@ export default function PlayerSeat({ player, posLabel, bigBlind, showHoleCards, 
       style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
     >
       <div className="flex flex-col items-center gap-0.5">
-        {/* Hole cards sit on top of the info box */}
-        {player.holeCards && !player.folded && (
-          <div className="flex gap-1">
-            {showHoleCards
-              ? player.holeCards.map((c, i) => <PlayingCard key={i} card={c} medium />)
-              : player.holeCards.map((_, i) => <FaceDownCard key={i} medium />)
+        {/* Hole cards sit on top of the info box. Live seats show face-down backs;
+            a folded seat's cards show only when actually revealed (a voluntary/
+            shown muck), dimmed to read as folded. */}
+        {(showFace || showBack) && (
+          <div className={`flex gap-1 ${player.folded ? 'opacity-50' : ''}`}>
+            {showFace
+              ? player.holeCards!.map((c, i) => <PlayingCard key={i} card={c} medium />)
+              : Array.from({ length: backCount }).map((_, i) => <FaceDownCard key={i} medium />)
             }
           </div>
         )}

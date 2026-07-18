@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
-import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands, type DateRange } from './lib/handsApi'
+import { exportHandsToDb, fetchHandsFromDb, fetchReportGrid, fetchReportHands, fetchStakes, type DateRange, type StakeInfo } from './lib/handsApi'
 import { monthRange } from './components/MonthRange'
 import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
-import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, SIZE_OPTIONS, DEFAULT_SIZE, type SizeAxis, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import type { TableKind } from './lib/positionUtils'
 import type { GameKind } from './lib/games'
 import { loadSolver, solverUrl } from './lib/solver'
@@ -17,8 +17,13 @@ import HandGrid from './components/HandGrid'
 import PostflopView from './components/PostflopView'
 import PostflopMenu from './components/PostflopMenu'
 import GraphView from './components/GraphView'
+import ProfilesView from './components/ProfilesView'
+import ProfileDetailView from './components/ProfileDetailView'
+import SolverCompareView from './components/SolverCompareView'
+import MapPlayersModal, { collectIdentities, type Assignment } from './components/MapPlayersModal'
+import { commitMapping } from './lib/profilesApi'
 
-type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster' | 'postflop' | 'graph'
+type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster' | 'postflop' | 'graph' | 'profiles' | 'solver-compare'
 type VpipFilter = 'all' | 'yes' | 'no'
 
 // --- Routing: the URL path is the source of truth for which view shows. ---
@@ -30,8 +35,18 @@ function parseView(p: string): View {
   if (p.startsWith('/reports')) return 'reports'
   if (p.startsWith('/postflop')) return 'postflop'
   if (p === '/graph') return 'graph'
+  if (p.startsWith('/profiles')) return 'profiles'
+  if (p === '/solver-compare') return 'solver-compare'
   if (p === '/import') return 'import'
   return 'landing'
+}
+// The faced-size filter carried in the URL (?sz), validated against the axis's
+// options. Returns undefined for the default / an unknown value so the SEL stays
+// canonical (reportUrl only writes ?sz for a non-default bucket).
+function sizeParam(axis: SizeAxis): string | undefined {
+  const sz = new URLSearchParams(window.location.search).get('sz')
+  if (!sz || sz === DEFAULT_SIZE[axis]) return undefined
+  return SIZE_OPTIONS[axis].some(o => o.key === sz) ? sz : undefined
 }
 function parseReportSel(p: string): ReportSel | null {
   let m = p.match(/^\/(?:reports|leakbuster)\/rfi\/([a-z0-9]+)/i)
@@ -43,13 +58,13 @@ function parseReportSel(p: string): ReportSel | null {
   if (m) {
     const defender = m[1].toUpperCase(), opener = m[2].toUpperCase()
     if ((VS_RFI_DEFENDERS as readonly string[]).includes(defender) && openersFor(defender).includes(opener))
-      return { type: 'vsrfi', defender, opener }
+      return { type: 'vsrfi', defender, opener, size: sizeParam('open') }
   }
   m = p.match(/^\/(?:reports|leakbuster)\/vs3bet\/([a-z]+)\/(ip|oop|bb)/i)
   if (m) {
     const opener = m[1].toUpperCase(), tag = m[2].toLowerCase() as Vs3betTag
     if (VS3BET_REPORTS.some(r => r.opener === opener && r.tag === tag))
-      return { type: 'vs3bet', opener, tag }
+      return { type: 'vs3bet', opener, tag, size: sizeParam('threebet') }
   }
   m = p.match(/^\/(?:reports|leakbuster)\/limpiso\/(ip|oop)/i)
   if (m) {
@@ -65,13 +80,17 @@ function parsePostflopSel(p: string): { formationId: string; nodeId: string } | 
   const m = p.match(/^\/postflop\/([a-z0-9-]+)\/([a-z0-9~-]+)/i)
   return m ? { formationId: m[1], nodeId: m[2] } : null
 }
+// ?sz carries a non-default faced-size bucket (default is omitted so the base URL
+// stays canonical and notes/anchors — which ignore size — don't fragment).
+const szQuery = (size: string | undefined, axis: SizeAxis) =>
+  size && size !== DEFAULT_SIZE[axis] ? `?sz=${size}` : ''
 function reportUrl(sel: ReportSel, base: string): string {
   return sel.type === 'rfi'
     ? `${base}/rfi/${sel.pos.toLowerCase()}`
     : sel.type === 'vsrfi'
-      ? `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
+      ? `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}${szQuery(sel.size, 'open')}`
       : sel.type === 'vs3bet'
-        ? `${base}/vs3bet/${sel.opener.toLowerCase()}/${sel.tag}`
+        ? `${base}/vs3bet/${sel.opener.toLowerCase()}/${sel.tag}${szQuery(sel.size, 'threebet')}`
         : `${base}/limpiso/${sel.iso}${sel.multiway !== 'all' ? `?mw=${sel.multiway}` : ''}`
 }
 
@@ -93,6 +112,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [exportState, setExportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle')
   const [exportMsg, setExportMsg] = useState('')
+  // PokerNow import carries player identities to map to profiles. You assign them
+  // in the map step (openable right after import); the assignments are held here
+  // until export writes them. `mapMode` = whether confirming should also export.
+  const [mapOpen, setMapOpen] = useState(false)
+  const [mapMode, setMapMode] = useState<'assign' | 'export'>('assign')
+  const [assignments, setAssignments] = useState<Assignment[] | null>(null)
 
   // database view state
   const [dbHands, setDbHands] = useState<ParsedHand[]>([])
@@ -115,6 +140,14 @@ export default function App() {
   const [monthFrom, setMonthFrom] = useState('')
   const [monthTo, setMonthTo] = useState('')
   const setMonths = (from: string, to: string) => { setMonthFrom(from); setMonthTo(to) }
+  // Stake filter (composite key; '' = all stakes), shared across reports/leakbuster.
+  const [stakeFilter, setStakeFilter] = useState('')
+  const [stakes, setStakes] = useState<StakeInfo[]>([])
+  // Top-level faced-size filter (PLO): the open-size bucket for vs-RFI tiles and
+  // the 3-bet-size bucket for vs-3-bet tiles. Rides into the opened report via
+  // the sel's `size` (→ URL ?sz), where the detail's own toggle can refine it.
+  const [openSize, setOpenSize] = useState<string>(DEFAULT_SIZE.open)
+  const [threebetSize, setThreebetSize] = useState<string>(DEFAULT_SIZE.threebet)
   // a single report's drill-down hands (fetched only when a report is opened)
   const [detailHands, setDetailHands] = useState<ParsedHand[]>([])
   const [detailStatus, setDetailStatus] = useState<'idle' | 'loading' | 'error'>('idle')
@@ -153,11 +186,11 @@ export default function App() {
   // Reports/Leakbuster menu — the compact preflop grid (no hand pool fetched).
   // Kept fresh in the background so entering Reports/Leakbuster is instant; the
   // grid is small and serves both views (population + your-hands columns).
-  async function loadReportGrid(range: DateRange) {
+  async function loadReportGrid(range: DateRange, stake: string) {
     setReportStatus('loading')
     setReportError(null)
     try {
-      setReportGrid(await fetchReportGrid(range))
+      setReportGrid(await fetchReportGrid(range, stake || undefined))
       setReportStatus('idle')
     } catch (e) {
       setReportError(String((e as Error).message ?? e))
@@ -177,8 +210,15 @@ export default function App() {
 
   // (Re)fetch the report grid on mount and whenever the month range changes —
   // prefetched from any view so opening Reports/Leakbuster is instant.
-  useEffect(() => { loadReportGrid(monthRange(monthFrom, monthTo)) // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monthFrom, monthTo])
+  useEffect(() => { loadReportGrid(monthRange(monthFrom, monthTo), stakeFilter) // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthFrom, monthTo, stakeFilter])
+
+  // The stakes present in the pool (for the active game) → the stake picker.
+  useEffect(() => {
+    let cancelled = false
+    fetchStakes('all', game).then(s => { if (!cancelled) setStakes(s) }).catch(() => { if (!cancelled) setStakes([]) })
+    return () => { cancelled = true }
+  }, [game])
 
   // Fetch data when entering the database view (reports grid is kept fresh above;
   // postflop fetches its own per-formation spots inside PostflopMenu/View).
@@ -203,7 +243,7 @@ export default function App() {
   // Keyed on the report's identity (not multiway — that's filtered client-side).
   const reportSelForDetail = (view === 'reports' || view === 'leakbuster') ? parseReportSel(path) : null
   const detailKey = reportSelForDetail
-    ? `${view}:${game}:${kind}:${monthFrom}:${monthTo}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
+    ? `${view}:${game}:${kind}:${monthFrom}:${monthTo}:${stakeFilter}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
     : ''
   useEffect(() => {
     // NLHE builds its 13×13 grid straight off the aggregate grid — no hand-pool fetch.
@@ -212,7 +252,7 @@ export default function App() {
     let cancelled = false
     setDetailStatus('loading')
     setDetailHands([])
-    fetchReportHands(reportSelForDetail, subject, kind, monthRange(monthFrom, monthTo))
+    fetchReportHands(reportSelForDetail, subject, kind, monthRange(monthFrom, monthTo), 'plo', undefined, stakeFilter || undefined)
       .then(({ hands }) => { if (!cancelled) { setDetailHands(hands); setDetailStatus('idle') } })
       .catch(() => { if (!cancelled) setDetailStatus('error') })
     return () => { cancelled = true }
@@ -229,6 +269,7 @@ export default function App() {
     setError(null)
     setImportHands(parsed)
     setImportNotes(new Array(parsed.length).fill(''))
+    setAssignments(null)
     setExportState('idle')
     navigate('/import', true)
   }
@@ -247,14 +288,36 @@ export default function App() {
     setImportHands([])
     setPasteText('')
     setImportNotes([])
+    setAssignments(null)
     setExportState('idle')
     navigate('/')
   }
 
-  async function handleExport() {
+  // Distinct player identities in the current import (empty for anonymous sources
+  // like Ignition, which skip the map step entirely).
+  const mapData = useMemo(() => collectIdentities(importHands), [importHands])
+
+  // Open the map step on its own (from the top-bar button), so you can assign
+  // right after importing without committing anything.
+  function openAssign() {
+    setMapMode('assign')
+    setMapOpen(true)
+  }
+
+  // Export: if there are players to map and you haven't yet, open the map step
+  // (confirming there also exports); otherwise export with what you assigned.
+  function startExport() {
+    if (mapData.identities.length && !assignments) { setMapMode('export'); setMapOpen(true) }
+    else runExport(assignments)
+  }
+
+  // The single write: commit the profile mapping (if any), then upsert the hands.
+  async function runExport(assignments: Assignment[] | null) {
+    setMapOpen(false)
     setExportState('busy')
     setExportMsg(`Saving 0/${importHands.length.toLocaleString()}…`)
     try {
+      if (assignments) await commitMapping(assignments, mapData.seats)
       const r = await exportHandsToDb(importHands, importNotes, p => {
         const extra = [p.duplicate && `${p.duplicate.toLocaleString()} dup`, p.failed && `${p.failed.toLocaleString()} failed`].filter(Boolean).join(' · ')
         setExportMsg(`Saving ${p.done.toLocaleString()}/${p.total.toLocaleString()}${extra ? ` · ${extra}` : ''}…`)
@@ -300,6 +363,10 @@ export default function App() {
                 <Card to="/reports" icon="📊" title="Reports" desc="Population tendencies — RFI by position, and more" />
                 <Card to="/leakbuster" icon="🛠️" title="Leakbuster" desc="Your own EV leaks vs GTO — same reports, your hands" />
                 <Card to="/postflop" icon="🃏" title="Postflop" desc="Spot browser — formations, lines &amp; sizing" />
+              </div>
+              <div className="flex flex-col sm:flex-row gap-6">
+                <Card to="/profiles" icon="👤" title="PokerNow Profiles" desc="Your private roster — data on the people you play" />
+                <Card to="/solver-compare" icon="🎯" title="Range vs Solver" desc="POC — your HU SB RFI frequency vs GTO" />
               </div>
             </div>
           )
@@ -388,7 +455,7 @@ export default function App() {
     if (reportStatus === 'loading') return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load reports" detail={reportError ?? ''} onBack={() => navigate('/')} />
     if (reportSel === null) {
-      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} stakes={stakes} stake={stakeFilter} onStake={setStakeFilter} openSize={openSize} threebetSize={threebetSize} onOpenSize={setOpenSize} onThreebetSize={setThreebetSize} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
     // NLHE: a 13×13 frequency grid built from the aggregate grid (no EV, no pool fetch).
     if (game === 'nlhe') {
@@ -398,7 +465,7 @@ export default function App() {
           noteAnchor={reportAnchor(game, kind, subject, reportSel)}
           onBack={() => navigate(base)}
           onOpenCell={async combo => {
-            const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo)
+            const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo, stakeFilter || undefined)
             if (hands.length) setDrill({ hands, notes, index: 0 })
           }}
         />
@@ -417,12 +484,35 @@ export default function App() {
         ))}
       </div>
     ) : undefined
+    // Faced-size filter (PLO vs-RFI: open size · vs-3-bet: 3-bet size). Slices the
+    // report so the field's response to different sizings can be compared. Carried
+    // in the URL (?sz); all sizes are already loaded, so switching re-filters
+    // client-side without a refetch.
+    const sizeAxis: SizeAxis | null = reportSel.type === 'vsrfi' ? 'open' : reportSel.type === 'vs3bet' ? 'threebet' : null
+    const sizeToggle = sizeAxis ? (() => {
+      const active = ('size' in reportSel && reportSel.size) || DEFAULT_SIZE[sizeAxis]
+      return (
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wide text-gray-600">faced size</span>
+          <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
+            {SIZE_OPTIONS[sizeAxis].map(o => (
+              <button key={o.key} onClick={() => navigate(reportUrl({ ...reportSel, size: o.key } as ReportSel, base), true)}
+                className={`px-3 py-1 transition-colors ${active === o.key ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )
+    })() : undefined
     return (
       <ReportsView
         result={buildReport(detailHands, reportSel, solverTable, subject, kind)}
-        headerExtra={mwToggle}
+        headerExtra={mwToggle ?? sizeToggle}
         noteAnchor={reportAnchor(game, kind, subject, reportSel)}
         handFilterCtx={{ rows: reportGrid, sel: reportSel, subject, kind, game }}
+        solver={solverTable}
+        showEvBands={view === 'leakbuster' && reportSel.type === 'rfi'}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(base)}
       />
@@ -432,6 +522,18 @@ export default function App() {
   // ---- Graph (hero results over time, from precomputed DB numbers) ----
   if (view === 'graph') {
     return <GraphView onBack={() => navigate('/')} />
+  }
+
+  // ---- Range vs Solver (POC) ----
+  if (view === 'solver-compare') {
+    return <SolverCompareView onBack={() => navigate('/')} />
+  }
+
+  // ---- PokerNow profiles (per-account player roster) ----
+  if (view === 'profiles') {
+    const idM = path.match(/^\/profiles\/(\d+)/)
+    if (idM) return <ProfileDetailView id={Number(idM[1])} onBack={() => navigate('/profiles')} />
+    return <ProfilesView onBack={() => navigate('/')} onOpen={id => navigate(`/profiles/${id}`)} />
   }
 
   // ---- Postflop spot browser ----
@@ -487,18 +589,18 @@ export default function App() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
         <h1 className="text-3xl font-bold text-white">Import hands</h1>
-        <p className="text-gray-400">Upload or paste your Ignition hand history (NLHE &amp; PLO supported)</p>
+        <p className="text-gray-400">Upload or paste an Ignition hand history (.txt) or PokerNow log (.csv) — format is auto-detected</p>
 
         <label className="w-full max-w-2xl cursor-pointer">
           <input
             type="file"
-            accept=".txt,text/plain"
+            accept=".txt,.csv,text/plain,text/csv"
             multiple
             className="hidden"
             onChange={e => { loadFiles(e.target.files); e.target.value = '' }}
           />
           <div className="border-2 border-dashed border-gray-700 hover:border-yellow-500 rounded-lg p-6 text-center text-sm text-gray-400 hover:text-yellow-400 transition-colors">
-            📄 Choose hand history file(s) — you can select multiple
+            📄 Choose file(s) — Ignition .txt or PokerNow .csv, you can select multiple
           </div>
         </label>
 
@@ -530,11 +632,26 @@ export default function App() {
     )
   }
 
+  const assignBtn = mapData.identities.length > 0 && (
+    <button
+      onClick={openAssign}
+      disabled={exportState === 'busy'}
+      className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+        assignments ? 'border-green-600 text-green-400 bg-green-600/10' : 'border-gray-600 text-gray-300 hover:text-white'
+      }`}
+      title="Map PokerNow players to profiles before exporting"
+    >
+      {assignments ? '✓ Players assigned' : `Assign players (${mapData.identities.length})`}
+    </button>
+  )
+
+  // PokerNow imports must have their players assigned before export is allowed.
+  const needsAssign = mapData.identities.length > 0 && !assignments
   const exportBtn = (
     <button
-      onClick={handleExport}
-      disabled={exportState === 'busy'}
-      title={exportState === 'error' ? exportMsg : undefined}
+      onClick={startExport}
+      disabled={exportState === 'busy' || needsAssign}
+      title={needsAssign ? 'Assign players to profiles first' : exportState === 'error' ? exportMsg : undefined}
       className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
         exportState === 'done'
           ? 'border-green-600 text-green-400 bg-green-600/10'
@@ -546,20 +663,36 @@ export default function App() {
       {exportState === 'busy' ? (exportMsg || 'Saving…')
         : exportState === 'done' ? exportMsg
         : exportState === 'error' ? (exportMsg || 'Export failed')
+        : needsAssign ? `Assign players first`
         : `Export ${importHands.length} → Database`}
     </button>
   )
 
   return (
-    <HandReplayer
-      key={`import-${importHands.length}`}
-      hands={importHands}
-      handNotes={importNotes}
-      onUpdateNote={(idx, value) => setImportNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
-      onBack={resetImport}
-      backLabel="← Home"
-      topBarExtra={exportBtn}
-    />
+    <>
+      <HandReplayer
+        key={`import-${importHands.length}`}
+        hands={importHands}
+        handNotes={importNotes}
+        onUpdateNote={(idx, value) => setImportNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
+        onBack={resetImport}
+        backLabel="← Home"
+        topBarExtra={<>{assignBtn}{exportBtn}</>}
+      />
+      {mapOpen && (
+        <MapPlayersModal
+          identities={mapData.identities}
+          initial={assignments ?? undefined}
+          confirmLabel={mapMode === 'export' ? 'Save & export' : 'Save assignments'}
+          onCancel={() => setMapOpen(false)}
+          onConfirm={a => {
+            setAssignments(a)
+            setMapOpen(false)
+            if (mapMode === 'export') runExport(a)
+          }}
+        />
+      )}
+    </>
   )
 }
 

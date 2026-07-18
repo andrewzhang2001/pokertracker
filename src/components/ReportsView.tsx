@@ -2,17 +2,20 @@ import { useMemo, useState, useEffect } from 'react'
 import type { ParsedHand } from '../lib/types'
 import {
   buildReportFromGrid, handFilterByAction, leakProfile, MISTAKE_EPS, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor,
-  VS3BET_REPORTS, VS3BET_OPENERS, vs3betTagLabel, LIMP_ISO_TAGS, limpIsoTagLabel,
+  VS3BET_REPORTS, VS3BET_OPENERS, vs3betTagLabel, LIMP_ISO_TAGS, limpIsoTagLabel, SIZE_OPTIONS,
   type ReportSel, type ReportResult, type ReportBucket, type EvSummary, type SolverTable, type Subject,
-  type ReportGridRow,
+  type ReportGridRow, type SizeOption,
 } from '../lib/reports'
 import type { TableKind } from '../lib/positionUtils'
 import type { GameKind } from '../lib/games'
 import { KindToggle } from './KindToggle'
 import { GameToggle } from './GameToggle'
 import { MonthRange } from './MonthRange'
+import { StakePicker } from './StakePicker'
+import type { StakeInfo } from '../lib/handsApi'
 import { loadSolver, solverUrl } from '../lib/solver'
 import PlayingCard from './PlayingCard'
+import EvBandsPanel from './EvBandsPanel'
 import NotesPanel from './NotesPanel'
 import { reportAnchor } from '../lib/noteAnchor'
 import { fetchNoteAnchors } from '../lib/notesApi'
@@ -93,10 +96,32 @@ function ArrowGlyph({ ev, size = 34, labels = false }: { ev: EvSummary; size?: n
 // Equal-length reference glyph for the legend (all four directions the same).
 const LEGEND_EV = { axes: { tight: 1, loose: 1, passive: 1, aggressive: 1 }, aggressionAxis: true } as EvSummary
 
+// A compact pill toggle for a faced-size axis (open / 3-bet).
+function SizePicker({ label, options, value, onChange }: {
+  label: string; options: SizeOption[]; value: string; onChange: (v: string) => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-gray-500">{label}</span>
+      <div className="flex rounded-full border border-gray-700 overflow-hidden">
+        {options.map(o => (
+          <button
+            key={o.key}
+            onClick={() => onChange(o.key)}
+            className={`px-2.5 py-1 transition-colors ${value === o.key ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, monthTo, onMonths, onOpen, onBack, subject = 'population', title = 'Reports' }: {
+export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, monthTo, onMonths, stakes, stake, onStake, openSize, threebetSize, onOpenSize, onThreebetSize, onOpen, onBack, subject = 'population', title = 'Reports' }: {
   grid: ReportGridRow[]
   kind: TableKind
   onKind: (k: TableKind) => void
@@ -105,12 +130,28 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
   monthFrom: string
   monthTo: string
   onMonths: (from: string, to: string) => void
+  stakes: StakeInfo[]
+  stake: string
+  onStake: (stake: string) => void
+  // Top-level faced-size filter (PLO). openSize slices the vs-RFI tiles by the
+  // open size, threebetSize slices the vs-3-bet tiles by the 3-bet size; the
+  // choice rides into whichever report is opened (via the sel's `size`).
+  openSize: string
+  threebetSize: string
+  onOpenSize: (v: string) => void
+  onThreebetSize: (v: string) => void
   onOpen: (sel: ReportSel) => void
   onBack: () => void
   subject?: Subject
   title?: string
 }) {
   const hu = kind === 'hu'
+  // Inject the active faced-size bucket into a sel so the tile's preview + the
+  // opened report both reflect the top-level filter. Non-sliced types pass through.
+  const withSize = (sel: ReportSel): ReportSel =>
+    sel.type === 'vsrfi' ? { ...sel, size: openSize }
+      : sel.type === 'vs3bet' ? { ...sel, size: threebetSize }
+        : sel
   // Load the active kind's solver tables once (cached) so tiles show profile +
   // EV/100. HU has its own SB-vs-BB solutions under /solver/hu/.
   const [tables, setTables] = useState<Map<string, SolverTable>>(new Map())
@@ -140,9 +181,10 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
   // Build every report from the compact grid (with solver EVs once tables load).
   const previews = useMemo(() => {
     const m = new Map<string, ReportResult>()
-    for (const sel of selsFor(kind)) m.set(selKey(sel), buildReportFromGrid(grid, sel, tables.get(solverUrl(sel, kind)), subject, kind, game))
+    for (const sel of selsFor(kind)) m.set(selKey(sel), buildReportFromGrid(grid, withSize(sel), tables.get(solverUrl(sel, kind)), subject, kind, game))
     return m
-  }, [grid, tables, subject, kind, game])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grid, tables, subject, kind, game, openSize, threebetSize])
 
   const Tile = ({ sel, label }: { sel: ReportSel; label: string }) => {
     const r = previews.get(selKey(sel))!
@@ -150,7 +192,7 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
     const hasNote = notedAnchors.has(reportAnchor(game, kind, subject, sel))
     return (
       <button
-        onClick={() => onOpen(sel)}
+        onClick={() => onOpen(withSize(sel))}
         className="shrink-0 w-28 rounded-lg border border-gray-700 hover:border-yellow-500 transition-colors px-3 py-2 text-left bg-gray-900 hover:bg-gray-800"
       >
         <div className="flex items-start justify-between gap-1">
@@ -200,11 +242,24 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
         <GameToggle game={game} onChange={onGame} />
         <KindToggle kind={kind} onChange={onKind} />
         <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
+        <StakePicker stakes={stakes} value={stake} onChange={onStake} />
         <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>
         <span className="ml-auto text-xs text-gray-600">
           ratio = <span className="text-red-400">raise</span>/<span className="text-green-400">call</span>/<span className="text-blue-400">fold</span>
         </span>
       </div>
+
+      {/* Top-level faced-size filter (PLO only). Slices the vs-RFI tiles by the
+          open size and the vs-3-bet tiles by the 3-bet size; the choice rides
+          into whichever report you open. RFI / limp-iso tiles are unaffected. */}
+      {game === 'plo' && (
+        <div className="flex items-center gap-4 text-xs">
+          <span className="text-gray-600 uppercase tracking-wide">faced size</span>
+          <SizePicker label="vs open" options={SIZE_OPTIONS.open} value={openSize} onChange={onOpenSize} />
+          <SizePicker label="vs 3-bet" options={SIZE_OPTIONS.threebet} value={threebetSize} onChange={onThreebetSize} />
+          <span className="text-gray-600">slices the vs-RFI &amp; vs-3-bet tiles</span>
+        </div>
+      )}
 
       {/* Profile-arrows legend: one compass showing the 4 leak directions.
           Each tile's arrows are the leak profile; arrow length = EV lost that
@@ -282,6 +337,11 @@ interface Props {
   onBack: () => void
   headerExtra?: React.ReactNode
   noteAnchor?: string
+  // When set (Leakbuster RFI), show the opening EV-bands panel: your actual opens
+  // bucketed into solver EV quartiles, realized net vs expectation. Needs the
+  // loaded solver table for this report's combos.
+  solver?: SolverTable
+  showEvBands?: boolean
   // PLO hand filter: the raw inputs to match a typed hand (e.g. "AA") against the
   // report's combos. The text state + (memoized) match live here so keystrokes
   // don't re-render App / re-run buildReport. Omitted for reports without a grid.
@@ -294,7 +354,7 @@ interface Props {
   }
 }
 
-export default function ReportsView({ result, onOpenHands, onBack, headerExtra, noteAnchor, handFilterCtx }: Props) {
+export default function ReportsView({ result, onOpenHands, onBack, headerExtra, noteAnchor, handFilterCtx, solver, showEvBands }: Props) {
   const [handQuery, setHandQuery] = useState('')
   // Reset the filter when the open report changes (title/subtitle are stable per report).
   useEffect(() => { setHandQuery('') }, [result.title, result.subtitle])
@@ -419,6 +479,14 @@ export default function ReportsView({ result, onOpenHands, onBack, headerExtra, 
             )}
           </div>
         )}
+
+        {/* Leakbuster RFI: your opens bucketed into solver EV quartiles */}
+        {showEvBands && solver && result.total > 0 && (() => {
+          const raise = result.buckets.find(b => b.key === 'raise')
+          return raise && raise.entries.length > 0
+            ? <EvBandsPanel solver={solver} raiseEntries={raise.entries} />
+            : null
+        })()}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-5xl mx-auto">
           {result.buckets.map(b => (

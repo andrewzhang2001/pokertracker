@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { computeGraphFromRows, type GraphRow, type GraphStats } from '../lib/graph'
-import { fetchGraphFromDb } from '../lib/handsApi'
+import { fetchGraphFromDb, fetchStakes, type StakeInfo } from '../lib/handsApi'
+import { StakePicker } from './StakePicker'
 
 interface Props {
   onBack: () => void
@@ -62,15 +63,27 @@ export default function GraphView({ onBack }: Props) {
   const [rows, setRows] = useState<GraphRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [game, setGame] = useState<GameFilter>('all')
+  const [stake, setStake] = useState('')
+  const [stakes, setStakes] = useState<StakeInfo[]>([])
+
+  // The stakes YOU'VE played (for the active game), populating the picker. A
+  // stake that no longer matches the game filter falls back to "all stakes".
+  useEffect(() => {
+    let cancelled = false
+    fetchStakes('mine', game === 'all' ? undefined : game)
+      .then(s => { if (!cancelled) setStakes(s) })
+      .catch(() => { if (!cancelled) setStakes([]) })
+    return () => { cancelled = true }
+  }, [game])
 
   useEffect(() => {
     let cancelled = false
     setRows(null); setError(null)
-    fetchGraphFromDb(game === 'all' ? undefined : game)
+    fetchGraphFromDb(game === 'all' ? undefined : game, stake || undefined)
       .then(r => { if (!cancelled) setRows(r) })
       .catch(e => { if (!cancelled) setError(String((e as Error).message ?? e)) })
     return () => { cancelled = true }
-  }, [game])
+  }, [game, stake])
 
   const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows) : null), [rows])
 
@@ -87,6 +100,7 @@ export default function GraphView({ onBack }: Props) {
             </button>
           ))}
         </div>
+        <StakePicker stakes={stakes} value={stake} onChange={setStake} />
         {g && <span className="text-gray-600 text-xs">{g.hands} hands · BB won/lost over time</span>}
       </div>
 
@@ -99,7 +113,7 @@ export default function GraphView({ onBack }: Props) {
             <Stat label="BB / 100" value={fmt(g.bbPer100, 2)} color={tone(g.bbPer100)} sub="actual winrate" />
             <Stat label="All-in adj BB / 100" value={fmt(g.adjBbPer100, 2)} color={tone(g.adjBbPer100)} sub="all-ins by equity" />
             <Stat label="Total BB" value={fmt(g.totalNetBB, 1)} color={tone(g.totalNetBB)} sub="won / lost" />
-            <Stat label="Rake paid" value={`−${g.totalRakeBB.toFixed(1)}`} color="text-orange-300" sub="BB attributed" />
+            <Stat label="Rake / 100" value={`−${g.rakeBbPer100.toFixed(2)}`} color="text-orange-300" sub={`−${g.totalRakeBB.toFixed(1)} BB total`} />
           </div>
 
           <div className="rounded-xl border border-gray-800 bg-black/20 p-4">

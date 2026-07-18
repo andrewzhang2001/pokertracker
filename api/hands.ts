@@ -80,6 +80,12 @@ async function ensureTable() {
   // 'plo' vs 'nlhe' — a second dimension parallel to table_kind. Backfilled rows
   // predate this column; treat NULL as 'plo'.
   await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS game text`
+  // Faced raise size (bb) + its report-filter partition — vsrfi: the open size,
+  // vs3bet: the 3-bet size; NULL for rfi/limpiso and rows predating this column
+  // (treated as the default top bucket by the grid, so tiles don't go empty
+  // pre-backfill). Populated by canonicalSpots / scripts/backfill-spots.ts.
+  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS faced_bb numeric`
+  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS size_bucket text`
   await sql`CREATE INDEX IF NOT EXISTS preflop_spots_lookup ON preflop_spots (game, table_kind, report_type, pos_a, pos_b, is_hero)`
   await sql`CREATE INDEX IF NOT EXISTS preflop_spots_hand ON preflop_spots (hand_id)`
 
@@ -134,18 +140,44 @@ async function handler(req: Request): Promise<Response> {
       // month after the selected end month). Null bound → unbounded on that side.
       const dFrom = params.get('from')
       const dTo = params.get('to')
+      // Optional stake filter, encoded "<currency>:<big_blind>" (e.g. "USD:1").
+      // null = all stakes. A stake is identified by its big blind (the small blind
+      // is unreliable — short/dead posts record a reduced amount). Currency guards
+      // against a play-money stake colliding with a real one.
+      const stakeParam = params.get('stake')
+      const [stakeCur, stakeBbStr] = stakeParam ? stakeParam.split(':') : [null, null]
+      const stakeBb = stakeBbStr ? Number(stakeBbStr) : null
+      // Distinct stakes present — populates the stake picker. One row per big
+      // blind. scope=mine restricts to the viewer's own hands (the graph);
+      // otherwise the whole pool (reports).
+      if (view === 'stakes') {
+        const scopeMine = params.get('scope') === 'mine'
+        const game = params.get('game') // 'plo' | 'nlhe' | null (all)
+        const rows = await sql`
+          SELECT big_blind, currency, count(*)::int AS n
+          FROM hands
+          WHERE (${scopeMine}::boolean = false OR owner_id = ${ownerId})
+            AND (${game}::text IS NULL
+                 OR (${game} = 'nlhe' AND game_type ILIKE '%holdem%')
+                 OR (${game} = 'plo'  AND game_type NOT ILIKE '%holdem%'))
+          GROUP BY big_blind, currency
+          ORDER BY currency, big_blind
+        `
+        return Response.json({ stakes: rows })
+      }
       // Compact per-combo grid for every preflop report — one GROUP BY drives all
       // the report tiles. `hero` = the viewer's own spots; `pop` = the field's.
       if (view === 'reports') {
         const grid = await sql`
-          SELECT COALESCE(s.game, 'plo') AS game, s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action,
+          SELECT COALESCE(s.game, 'plo') AS game, s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action, s.size_bucket,
             sum(CASE WHEN s.is_hero AND s.owner_id = ${ownerId} THEN 1 ELSE 0 END)::int AS hero,
             sum(CASE WHEN NOT s.is_hero THEN 1 ELSE 0 END)::int AS pop
           FROM preflop_spots s JOIN hands h ON h.id = s.hand_id
           WHERE s.stack_bb >= 75 AND s.key_stack_bb >= 75
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
-          GROUP BY COALESCE(s.game, 'plo'), s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action
+            AND (${stakeBb}::numeric IS NULL OR (h.big_blind = ${stakeBb}::numeric AND h.currency = ${stakeCur}))
+          GROUP BY COALESCE(s.game, 'plo'), s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action, s.size_bucket
         `
         return Response.json({ grid })
       }
@@ -175,6 +207,7 @@ async function handler(req: Request): Promise<Response> {
           )
             AND (${dFrom}::bigint IS NULL OR played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR played_at < ${dTo}::bigint)
+            AND (${stakeBb}::numeric IS NULL OR (big_blind = ${stakeBb}::numeric AND currency = ${stakeCur}))
           ORDER BY played_at DESC NULLS LAST, created_at DESC
         `
         return Response.json({ hands: rows })
@@ -252,6 +285,7 @@ async function handler(req: Request): Promise<Response> {
             AND (${game}::text IS NULL
                  OR (${game} = 'nlhe' AND game_type ILIKE '%holdem%')
                  OR (${game} = 'plo'  AND game_type NOT ILIKE '%holdem%'))
+            AND (${stakeBb}::numeric IS NULL OR (big_blind = ${stakeBb}::numeric AND currency = ${stakeCur}))
           ORDER BY played_at ASC NULLS LAST, created_at ASC
         `
         return Response.json({ rows })
@@ -325,11 +359,11 @@ async function handler(req: Request): Promise<Response> {
         if (spots.length) {
           await sql`
             INSERT INTO preflop_spots (
-              hand_id, game, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, owner_id
+              hand_id, game, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, faced_bb, size_bucket, owner_id
             )
             SELECT x.*, ${ownerId} FROM jsonb_to_recordset(${JSON.stringify(spots)}::jsonb) AS x(
               hand_id text, game text, table_kind text, report_type text, pos_a text, pos_b text, multiway boolean,
-              combo text, action text, is_hero boolean, stack_bb numeric, key_stack_bb numeric
+              combo text, action text, is_hero boolean, stack_bb numeric, key_stack_bb numeric, faced_bb numeric, size_bucket text
             )
           `
         }

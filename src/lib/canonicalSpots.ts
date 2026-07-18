@@ -4,7 +4,7 @@ import { holdemCombo } from './holdemCombo'
 import { gameKind, type GameKind } from './games'
 import { tableKind, type TableKind } from './positionUtils'
 import {
-  rfiSpots, vsRfiSpots, vs3betSpots, limpVsIsoSpots,
+  rfiSpots, vsRfiSpots, vs3betSpots, limpVsIsoSpots, sizeBucketOf,
 } from './reports'
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,8 @@ export interface PreflopSpotRow {
   is_hero: boolean           // the decision-maker was the hand's owner
   stack_bb: number           // acting player's starting stack (bb)
   key_stack_bb: number       // the effective-stack partner (bb): BB / opener / iso raiser
+  faced_bb: number | null    // size of the raise faced (vsrfi: open · vs3bet: 3-bet); null otherwise
+  size_bucket: string | null // faced_bb's report filter partition; null when not sliced
 }
 
 // The combo key is game-specific: PLO's suit-isomorphic 4-card key vs Hold'em's
@@ -61,7 +63,7 @@ export function spotsForHand(hand: ParsedHand): PreflopSpotRow[] {
     rows.push({
       hand_id: s.handId, game, table_kind: kind, report_type: 'rfi', pos_a: s.displayPos, pos_b: null, multiway: null,
       combo: combo(s.cards), action: s.action, is_hero: s.isHero,
-      stack_bb: stack(s.stackBB), key_stack_bb: stack(s.bbStackBB),
+      stack_bb: stack(s.stackBB), key_stack_bb: stack(s.bbStackBB), faced_bb: null, size_bucket: null,
     })
   }
   for (const s of vsRfiSpots(hand)) {
@@ -69,6 +71,7 @@ export function spotsForHand(hand: ParsedHand): PreflopSpotRow[] {
       hand_id: s.handId, game, table_kind: kind, report_type: 'vsrfi', pos_a: s.defenderPos, pos_b: s.openerPos, multiway: null,
       combo: combo(s.cards), action: s.action, is_hero: s.isHero,
       stack_bb: stack(s.stackBB), key_stack_bb: stack(s.openerStackBB),
+      faced_bb: s.openBB, size_bucket: sizeBucketOf(game, 'vsrfi', s.openBB),
     })
   }
   for (const s of vs3betSpots(hand)) {
@@ -76,13 +79,14 @@ export function spotsForHand(hand: ParsedHand): PreflopSpotRow[] {
       hand_id: s.handId, game, table_kind: kind, report_type: 'vs3bet', pos_a: s.openerPos, pos_b: s.tag, multiway: null,
       combo: combo(s.cards), action: s.action, is_hero: s.isHero,
       stack_bb: stack(s.stackBB), key_stack_bb: stack(s.threeBettorStackBB),
+      faced_bb: s.threeBetBB, size_bucket: sizeBucketOf(game, 'vs3bet', s.threeBetBB),
     })
   }
   for (const s of limpVsIsoSpots(hand)) {
     rows.push({
       hand_id: s.handId, game, table_kind: kind, report_type: 'limpiso', pos_a: s.tag, pos_b: null, multiway: s.multiway,
       combo: combo(s.cards), action: s.action, is_hero: s.isHero,
-      stack_bb: stack(s.stackBB), key_stack_bb: stack(s.isoStackBB),
+      stack_bb: stack(s.stackBB), key_stack_bb: stack(s.isoStackBB), faced_bb: null, size_bucket: null,
     })
   }
 

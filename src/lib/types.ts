@@ -8,6 +8,11 @@ export interface PlayerInfo {
   position: string
   isMe: boolean
   startingStack: number
+  // Transient, parse-time only: the raw site identity of this seat (e.g. a
+  // PokerNow "name @ token"). Used by the upload flow to map seats to per-account
+  // profiles; STRIPPED by canonicalizeHand before persistence so the shared pool
+  // (and the population views) never carry real player names.
+  sourceName?: string
 }
 
 export type Street = 'preflop' | 'flop' | 'turn' | 'river'

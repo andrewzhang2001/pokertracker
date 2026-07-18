@@ -106,9 +106,9 @@ export type LimpIsoTag = 'ip' | 'oop'
 export type LimpMultiway = 'all' | 'hu' | 'multi'
 export type ReportSel =
   | { type: 'rfi'; pos: string }
-  | { type: 'vsrfi'; defender: string; opener: string }
+  | { type: 'vsrfi'; defender: string; opener: string; size?: string }
   | { type: 'limpiso'; iso: LimpIsoTag; multiway: LimpMultiway }
-  | { type: 'vs3bet'; opener: string; tag: Vs3betTag }
+  | { type: 'vs3bet'; opener: string; tag: Vs3betTag; size?: string }
 
 // The vs-3-bet reports we keep: openers LJ/HJ/CO each get an IP- and an
 // OOP-3-bettor report; BU only faces OOP (blinds); SB only faces BB.
@@ -127,6 +127,70 @@ export const vs3betTagLabel = (tag: Vs3betTag) => (tag === 'ip' ? 'IP' : tag ===
 
 export const LIMP_ISO_TAGS: LimpIsoTag[] = ['ip', 'oop']
 export const limpIsoTagLabel = (t: LimpIsoTag) => (t === 'ip' ? 'IP' : 'OOP')
+
+// ---------------------------------------------------------------------------
+// Preflop faced-size slicing (the report filter). The "faced size" is the raise
+// the decision-maker responds to — vs-RFI: the open size; vs-3-bet: the 3-bet
+// size. Slicing it lets us compare the population's response across sizings
+// (e.g. does the field defend a min-open the same as a 3bb open?). Only PLO is
+// sliced; NLHE keeps its single gate. Partitions are DISJOINT; a UI option may
+// union several to express a cumulative "≥X" threshold. The default option (last
+// in each list) reproduces the pre-slice behaviour — opens ≥3bb, 3-bets ≥10bb —
+// so the tiles and the unfiltered report don't move until a smaller bucket is
+// picked. To capture the smaller buckets the extractors drop their PLO size gate
+// (vs-RFI: any open; vs-3-bet: any 3-bet ≥6bb).
+// ---------------------------------------------------------------------------
+export type SizeAxis = 'open' | 'threebet'
+export const PLO_VS3BET_MIN = 6.0    // vs-3-bet capture floor (the loosest bucket)
+
+// A faced size (bb) → its disjoint partition key, per axis. PLO edges.
+const openPartition = (bb: number): string => (bb < 2.3 ? 'lt23' : bb < 3.0 ? 's23' : 'ge3')
+const threebetPartition = (bb: number): string => (bb < 7 ? 's6' : bb < 10 ? 's7' : 'ge10')
+const partitionFor = (axis: SizeAxis, bb: number) => (axis === 'open' ? openPartition(bb) : threebetPartition(bb))
+
+// A selectable size filter and the disjoint partitions it admits.
+export interface SizeOption { key: string; label: string; parts: string[] }
+export const SIZE_OPTIONS: Record<SizeAxis, SizeOption[]> = {
+  open: [
+    { key: 'lt23', label: '<2.3bb', parts: ['lt23'] },
+    { key: 's23', label: '2.3–3bb', parts: ['s23'] },
+    { key: 'ge3', label: '≥3bb', parts: ['ge3'] },              // default (current)
+  ],
+  threebet: [
+    { key: 'ge6', label: '≥6bb', parts: ['s6', 's7', 'ge10'] },
+    { key: 'ge7', label: '≥7bb', parts: ['s7', 'ge10'] },
+    { key: 'ge10', label: '≥10bb', parts: ['ge10'] },           // default (current)
+  ],
+}
+export const DEFAULT_SIZE: Record<SizeAxis, string> = { open: 'ge3', threebet: 'ge10' }
+
+// Which faced-size axis (if any) a report SEL is sliced on for a game. PLO only.
+export function sizeAxisFor(sel: ReportSel, game: GameKind): SizeAxis | null {
+  if (game !== 'plo') return null
+  if (sel.type === 'vsrfi') return 'open'
+  if (sel.type === 'vs3bet') return 'threebet'
+  return null
+}
+
+// The partition keys the SEL's active size option admits (null = not sliced, so
+// no size constraint). Reads sel.size, falling back to the axis default.
+function sizePartsFor(sel: ReportSel, game: GameKind): Set<string> | null {
+  const axis = sizeAxisFor(sel, game)
+  if (!axis) return null
+  const key = ('size' in sel && sel.size) || DEFAULT_SIZE[axis]
+  const opts = SIZE_OPTIONS[axis]
+  const opt = opts.find(o => o.key === key) ?? opts.find(o => o.key === DEFAULT_SIZE[axis])!
+  return new Set(opt.parts)
+}
+
+// The stored size_bucket for a materialized spot (canonicalSpots). null unless
+// PLO vs-RFI / vs-3-bet.
+export function sizeBucketOf(game: GameKind, reportType: string, facedBB: number | null): string | null {
+  if (game !== 'plo' || facedBB == null) return null
+  if (reportType === 'vsrfi') return openPartition(facedBB)
+  if (reportType === 'vs3bet') return threebetPartition(facedBB)
+  return null
+}
 
 // raise = red, call/limp = green, fold = blue
 const STYLE = {
@@ -234,6 +298,7 @@ export interface VsRfiSpot {
   isHero: boolean
   stackBB: number          // defender's starting stack (bb)
   openerStackBB: number    // opener's starting stack (bb)
+  openBB: number           // the open size faced (bb) — the size-filter axis
   cards: ParsedCard[] | null
   action: VsRfiAction
 }
@@ -245,6 +310,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB?: number): VsRfiSpot[] {
 
   let openerPos: string | null = null
   let openerStackBB = 0
+  let openBB = 0
   const spots: VsRfiSpot[] = []
 
   for (const a of hand.actions) {
@@ -258,9 +324,14 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB?: number): VsRfiSpot[] {
         const p = playerBy(a.seatNumber)
         if (!p) return []
         const pos = displayPosition(p.position, tableSize)
-        if ((a.amount ?? 0) / hand.bigBlind < (minOpenBB ?? openMinFor(pos, game))) return [] // open too small to count as RFI
+        const size = (a.amount ?? 0) / hand.bigBlind
+        // PLO captures every open (the size filter slices it); NLHE keeps its
+        // gate. An explicit minOpenBB always wins (used by tests / callers).
+        const floor = minOpenBB ?? (game === 'plo' ? 0 : openMinFor(pos, game))
+        if (size < floor) return [] // open too small to count as RFI
         openerPos = pos
         openerStackBB = p.startingStack / hand.bigBlind
+        openBB = size
         continue
       }
       return [] // first voluntary action was a limp/check — not a pure RFI
@@ -272,7 +343,7 @@ export function vsRfiSpots(hand: ParsedHand, minOpenBB?: number): VsRfiSpot[] {
     const mk = (action: VsRfiAction): VsRfiSpot => ({
       handId: hand.handId, defenderSeat: a.seatNumber!, defenderPos: displayPosition(p.position, tableSize),
       openerPos: openerPos!, isHero: p.isMe, stackBB: p.startingStack / hand.bigBlind,
-      openerStackBB, cards: cardsFor(hand, a.seatNumber!), action,
+      openerStackBB, openBB, cards: cardsFor(hand, a.seatNumber!), action,
     })
     if (a.type === 'fold') { spots.push(mk('fold')); continue }
     if (a.type === 'call') { spots.push(mk('call')); break }            // pot multiway → chain ends
@@ -293,12 +364,13 @@ export interface VsRfiReport {
 
 export function vsRfiReport(
   hands: ParsedHand[],
-  opts: { defender: string; opener: string; minBB: number; subject: Subject },
+  opts: { defender: string; opener: string; minBB: number; subject: Subject; sizeParts?: Set<string> | null },
 ): VsRfiReport {
   const entries: Record<VsRfiAction, ReportEntry[]> = { raise: [], call: [], fold: [] }
   for (const hand of hands) {
     for (const s of vsRfiSpots(hand)) {
       if (s.defenderPos !== opts.defender || s.openerPos !== opts.opener) continue
+      if (opts.sizeParts && !opts.sizeParts.has(openPartition(s.openBB))) continue
       if (!includeSpot(opts.subject, s.isHero)) continue
       // both players must be deep enough — the 100bb solver baseline only holds
       // when the effective stack (min of opener & defender) is 75bb+.
@@ -336,6 +408,7 @@ export interface Vs3betSpot {
   isHero: boolean          // the opener (the decision-maker) is hero
   stackBB: number          // opener's starting stack (bb)
   threeBettorStackBB: number
+  threeBetBB: number       // the 3-bet size faced (bb) — the size-filter axis
   cards: ParsedCard[] | null
   action: Vs3betAction
 }
@@ -347,7 +420,7 @@ export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: nu
 
   let phase: 'open' | 'threebet' | 'response' = 'open'
   let openerSeat = -1, openerPos = '', openerStackBB = 0
-  let threeBettorPos = '', threeBettorStackBB = 0
+  let threeBettorPos = '', threeBettorStackBB = 0, threeBetBB = 0
 
   for (const a of hand.actions) {
     if (a.street !== 'preflop' || a.seatNumber === undefined) continue
@@ -371,9 +444,14 @@ export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: nu
     if (phase === 'threebet') {
       if (a.type === 'fold') continue
       if (a.type === 'raise' || a.type === 'allin') {
-        if ((a.amount ?? 0) / hand.bigBlind < (min3betBB ?? threebetMinFor(openerPos, game))) return [] // 3-bet too small to count
+        const size = (a.amount ?? 0) / hand.bigBlind
+        // PLO captures every 3-bet ≥6bb (the loosest bucket); the size filter
+        // slices from there. NLHE keeps its gate. Explicit min3betBB always wins.
+        const floor = min3betBB ?? (game === 'plo' ? PLO_VS3BET_MIN : threebetMinFor(openerPos, game))
+        if (size < floor) return [] // 3-bet too small to count
         threeBettorPos = displayPosition(p.position, tableSize)
         threeBettorStackBB = p.startingStack / hand.bigBlind
+        threeBetBB = size
         phase = 'response'; continue
       }
       return [] // a call before the 3-bet → flat/squeeze pot, not a clean vs-3-bet
@@ -388,7 +466,7 @@ export function vs3betSpots(hand: ParsedHand, minOpenBB?: number, min3betBB?: nu
     const mk = (action: Vs3betAction): Vs3betSpot => ({
       handId: hand.handId, openerSeat, openerPos, threeBettorPos,
       tag: threeBetTag(openerPos, threeBettorPos), isHero: p.isMe,
-      stackBB: openerStackBB, threeBettorStackBB, cards: cardsFor(hand, openerSeat), action,
+      stackBB: openerStackBB, threeBettorStackBB, threeBetBB, cards: cardsFor(hand, openerSeat), action,
     })
     if (a.type === 'fold') return [mk('fold')]
     if (a.type === 'call') return [mk('call')]
@@ -409,12 +487,13 @@ export interface Vs3betReport {
 
 export function vs3betReport(
   hands: ParsedHand[],
-  opts: { opener: string; tag: Vs3betTag; minBB: number; subject: Subject },
+  opts: { opener: string; tag: Vs3betTag; minBB: number; subject: Subject; sizeParts?: Set<string> | null },
 ): Vs3betReport {
   const entries: Record<Vs3betAction, ReportEntry[]> = { raise: [], call: [], fold: [] }
   for (const hand of hands) {
     for (const s of vs3betSpots(hand)) {
       if (s.openerPos !== opts.opener || s.tag !== opts.tag) continue
+      if (opts.sizeParts && !opts.sizeParts.has(threebetPartition(s.threeBetBB))) continue
       if (!includeSpot(opts.subject, s.isHero)) continue
       // both players 75bb+ (the 100bb solver baseline)
       if (s.stackBB < opts.minBB || s.threeBettorStackBB < opts.minBB) continue
@@ -638,14 +717,22 @@ export function leakProfile(axes: EvSummary['axes']): { label: string; nickname:
   return { label: [t, a].filter(Boolean).join('-') || '≈ GTO', nickname }
 }
 
-function subtitle(kind: ReportKind, subject: Subject, game: GameKind): string {
+function subtitle(kind: ReportKind, subject: Subject, game: GameKind, size?: string): string {
   const who = subject === 'hero' ? 'your hands' : 'population · excludes you'
   const base = `${who} · ${MIN_BB}bb+`
   const s = GAMES[game].sizing
-  return kind === 'rfi' ? `${base} · unopened pots`
-    : kind === 'vsrfi' ? `${base} · vs a single ≥${s.open}bb open`
-    : kind === 'vs3bet' ? `${base} · open then vs a single ≥${s.threebet}bb 3-bet`
-    : `${base} · limped pot, original limper vs a ≥${s.iso}bb iso`
+  if (kind === 'rfi') return `${base} · unopened pots`
+  if (kind === 'limpiso') return `${base} · limped pot, original limper vs a ≥${s.iso}bb iso`
+  // vs-RFI / vs-3-bet reflect the selected faced-size bucket (PLO, where the size
+  // filter applies); NLHE isn't sliced, so it shows its single gate.
+  if (game === 'plo') {
+    const axis: SizeAxis = kind === 'vsrfi' ? 'open' : 'threebet'
+    const key = size || DEFAULT_SIZE[axis]
+    const opts = SIZE_OPTIONS[axis]
+    const label = (opts.find(o => o.key === key) ?? opts.find(o => o.key === DEFAULT_SIZE[axis])!).label
+    return kind === 'vsrfi' ? `${base} · vs a single ${label} open` : `${base} · open then vs a single ${label} 3-bet`
+  }
+  return kind === 'vsrfi' ? `${base} · vs a single ≥${s.open}bb open` : `${base} · open then vs a single ≥${s.threebet}bb 3-bet`
 }
 
 // Bucket specs per report kind — the single source of truth shared by both the
@@ -695,8 +782,8 @@ export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: Solver
     return assemble('rfi', title, subtitle('rfi', subject, 'plo'), r, REPORT_SPECS.rfi, solver)
   }
   if (sel.type === 'vsrfi') {
-    const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, subject })
-    return assemble('vsrfi', title, subtitle('vsrfi', subject, 'plo'), r, REPORT_SPECS.vsrfi, solver)
+    const r = vsRfiReport(hands, { defender: sel.defender, opener: sel.opener, minBB: MIN_BB, subject, sizeParts: sizePartsFor(sel, 'plo') })
+    return assemble('vsrfi', title, subtitle('vsrfi', subject, 'plo', sel.size), r, REPORT_SPECS.vsrfi, solver)
   }
   if (sel.type === 'limpiso') {
     const r = limpVsIsoReport(hands, { iso: sel.iso, multiway: sel.multiway, minBB: MIN_BB, subject })
@@ -705,8 +792,8 @@ export function buildReport(hands: ParsedHand[], sel: ReportSel, solver?: Solver
       solverless: true,
     }
   }
-  const r = vs3betReport(hands, { opener: sel.opener, tag: sel.tag, minBB: MIN_BB, subject })
-  return assemble('vs3bet', title, subtitle('vs3bet', subject, 'plo'), r, REPORT_SPECS.vs3bet, solver)
+  const r = vs3betReport(hands, { opener: sel.opener, tag: sel.tag, minBB: MIN_BB, subject, sizeParts: sizePartsFor(sel, 'plo') })
+  return assemble('vs3bet', title, subtitle('vs3bet', subject, 'plo', sel.size), r, REPORT_SPECS.vs3bet, solver)
 }
 
 // ===========================================================================
@@ -725,6 +812,7 @@ export interface ReportGridRow {
   multiway: boolean | null
   combo: string | null
   action: string
+  size_bucket: string | null  // faced-size partition (vsrfi/vs3bet PLO); null otherwise
   hero: number   // count of the viewer's own (is_hero) spots
   pop: number    // count of field (non-hero) spots
 }
@@ -811,9 +899,15 @@ export function gridComboCounts(
     return true
   }
   const pick = (r: ReportGridRow) => subject === 'hero' ? r.hero : subject === 'population' ? r.pop : r.hero + r.pop
+  // Faced-size slice: only vsrfi/vs3bet (PLO) are sliced. A legacy row with a
+  // null size_bucket (predating the column) is treated as the default top bucket
+  // so it still shows under the default filter until re-materialized.
+  const axis = sizeAxisFor(sel, game)
+  const parts = sizePartsFor(sel, game)
   const comboCounts = new Map<string | null, Map<string, number>>()
   for (const r of rows) {
     if (!match(r)) continue
+    if (parts && axis && !parts.has(r.size_bucket ?? partitionFor(axis, Infinity))) continue
     const n = pick(r)
     if (n <= 0) continue
     let am = comboCounts.get(r.combo)
@@ -890,7 +984,8 @@ export function buildReportFromGrid(
   const comboCounts = gridComboCounts(rows, sel, subject, tableKind, game)
   // Frequency-only when there's no GTO baseline: limp-iso, or a game with no solver (NLHE).
   const solverless = sel.type === 'limpiso' || !GAMES[game].hasSolver
-  const sub = subtitle(kind, subject, game) + (sel.type === 'limpiso' ? mwSuffix(sel.multiway) : '')
+  const size = sel.type === 'vsrfi' || sel.type === 'vs3bet' ? sel.size : undefined
+  const sub = subtitle(kind, subject, game, size) + (sel.type === 'limpiso' ? mwSuffix(sel.multiway) : '')
   const res = assembleFromCounts(kind, huTitle(sel, tableKind), sub, comboCounts, REPORT_SPECS[kind], solverless ? undefined : solver)
   return solverless ? { ...res, solverless: true } : res
 }

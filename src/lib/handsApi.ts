@@ -74,10 +74,54 @@ const withRange = (p: URLSearchParams, r?: DateRange) => {
   return p
 }
 
+// Optional stake filter — the composite key "<currency>:<big_blind>" (e.g.
+// "USD:0.05"). undefined / '' = all stakes. The currency guards against a
+// play-money stake sharing a big-blind value with a real one.
+export type StakeFilter = string | undefined
+const withStake = (p: URLSearchParams, stake?: StakeFilter) => {
+  if (stake) p.set('stake', stake)
+  return p
+}
+
+// A distinct stake present in the pool (one dropdown row). Identified by big
+// blind — the small blind is unreliable (short/dead posts record a reduced amount).
+export interface StakeInfo {
+  bigBlind: number
+  currency: string
+  count: number         // hands at this stake within the requested scope
+}
+
+// Composite "<currency>:<big_blind>" — must round-trip through the server's
+// stake-param parser.
+export const stakeKey = (s: { bigBlind: number; currency: string }) => `${s.currency}:${s.bigBlind}`
+
+// A short human label for a stake by its big blind, e.g. "$1" (real money) or
+// "2 play" (play chips), trimmed of trailing zeros.
+export function stakeLabel(s: StakeInfo): string {
+  const bb = Number.isInteger(s.bigBlind) ? String(s.bigBlind) : String(Number(s.bigBlind.toFixed(2)))
+  return /usd/i.test(s.currency) ? `$${bb}` : `${bb} ${s.currency || 'play'}`
+}
+
+// Distinct stakes present. scope='mine' → the viewer's own hands (graph);
+// 'all' → the whole pool (reports). Optional game (plo/nlhe) narrows the list.
+export async function fetchStakes(scope: 'mine' | 'all', game?: GameKind): Promise<StakeInfo[]> {
+  const p = new URLSearchParams({ view: 'stakes' })
+  if (scope === 'mine') p.set('scope', 'mine')
+  if (game) p.set('game', game)
+  const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load stakes')
+  const data = await res.json() as { stakes?: { big_blind: number | string; currency: string; n: number }[] }
+  return (data.stakes ?? []).map(s => ({
+    bigBlind: Number(s.big_blind),
+    currency: s.currency,
+    count: s.n,
+  }))
+}
+
 // The compact per-combo report grid (one GROUP BY over preflop_spots). Drives
 // every report tile without shipping the hand pool to the browser.
-export async function fetchReportGrid(range?: DateRange): Promise<ReportGridRow[]> {
-  const p = withRange(new URLSearchParams({ view: 'reports' }), range)
+export async function fetchReportGrid(range?: DateRange, stake?: StakeFilter): Promise<ReportGridRow[]> {
+  const p = withStake(withRange(new URLSearchParams({ view: 'reports' }), range), stake)
   const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load reports')
   const data = await res.json() as { grid?: ReportGridRow[] }
@@ -86,8 +130,8 @@ export async function fetchReportGrid(range?: DateRange): Promise<ReportGridRow[
 
 // Hands for ONE report's drill-down — only those with a qualifying spot, so the
 // detail view can re-derive populated bucket lists with buildReport cheaply.
-export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange, game: GameKind = 'plo', combo?: string): Promise<{ hands: ParsedHand[]; notes: string[] }> {
-  const p = withRange(new URLSearchParams({ view: 'report-hands', subject, kind, game }), range)
+export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange, game: GameKind = 'plo', combo?: string, stake?: StakeFilter): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const p = withStake(withRange(new URLSearchParams({ view: 'report-hands', subject, kind, game }), range), stake)
   if (combo) p.set('combo', combo) // drill to one 13×13 grid cell
   if (sel.type === 'rfi') { p.set('type', 'rfi'); p.set('pos_a', sel.pos) }
   else if (sel.type === 'vsrfi') { p.set('type', 'vsrfi'); p.set('pos_a', sel.defender); p.set('pos_b', sel.opener) }
@@ -172,8 +216,8 @@ export async function fetchHandsByIds(ids: string[]): Promise<ParsedHand[]> {
 
 // Lightweight graph feed — YOUR precomputed per-hand result numbers (no parsing).
 // `game` optionally restricts to PLO or NLHE; omitted = all games.
-export async function fetchGraphFromDb(game?: GameKind): Promise<GraphRow[]> {
-  const q = new URLSearchParams({ view: 'graph' })
+export async function fetchGraphFromDb(game?: GameKind, stake?: StakeFilter): Promise<GraphRow[]> {
+  const q = withStake(new URLSearchParams({ view: 'graph' }), stake)
   if (game) q.set('game', game)
   const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load graph')

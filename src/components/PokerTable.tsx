@@ -3,6 +3,7 @@ import type { ParsedHand, ParsedCard, HandState, PlayerInfo } from '../lib/types
 import { computeEquities } from '../lib/equity'
 import { classifyBoard } from '../lib/ploEval'
 import { POSITION_RANK, displayPosition } from '../lib/positionUtils'
+import { gameKind } from '../lib/games'
 import PlayerSeat from './PlayerSeat'
 import PlayingCard from './PlayingCard'
 import ChipStack from './ChipStack'
@@ -28,21 +29,25 @@ const PUSH_X = 0
 const PUSH_Y = 0
 
 function getLayout(players: PlayerInfo[]) {
-  const me = players.find(p => p.isMe)
-  if (!me) return { seats: {} as Record<number, { x: number; y: number }>, chips: {} as Record<number, { x: number; y: number }> }
+  if (!players.length) return { seats: {} as Record<number, { x: number; y: number }>, chips: {} as Record<number, { x: number; y: number }> }
+
+  // Anchor seat = the hero (sat at the bottom). Railed/observed hands have no
+  // hero, so fall back to the lowest seat number — a stable anchor so the table
+  // still renders and the layout is deterministic across a session's hands.
+  const anchor = players.find(p => p.isMe) ?? [...players].sort((a, b) => a.seatNumber - b.seatNumber)[0]
 
   const total = players.length
-  const meRank = POSITION_RANK[me.position] ?? 0
+  const anchorRank = POSITION_RANK[anchor.position] ?? 0
 
   const others = [...players]
-    .filter(p => !p.isMe)
+    .filter(p => p !== anchor)
     .sort((a, b) => {
-      const ai = ((POSITION_RANK[a.position] ?? 0) - meRank + total) % total
-      const bi = ((POSITION_RANK[b.position] ?? 0) - meRank + total) % total
+      const ai = ((POSITION_RANK[a.position] ?? 0) - anchorRank + total) % total
+      const bi = ((POSITION_RANK[b.position] ?? 0) - anchorRank + total) % total
       return ai - bi
     })
 
-  const all = [me, ...others]
+  const all = [anchor, ...others]
   const n = all.length
   const cx = 50, cy = 50, rx = 46, ry = 46
 
@@ -97,6 +102,7 @@ function DealerButton() {
 
 export default function PokerTable({ hand, state, showOpponentCards }: Props) {
   const { seats, chips } = getLayout(hand.players)
+  const holeCount = gameKind(hand.gameType) === 'plo' ? 4 : 2
   // Postflop showdown equity, recomputed per step (board / live set change).
   const equities = useMemo(() => computeEquities(hand, state), [hand, state])
   // A player's hand class from their own cards + the public board: the made-hand
@@ -247,7 +253,10 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
         const px = x + nx * PUSH_X
         const py = y + ny * PUSH_Y
 
-        const showHoleCards = (!player.folded && player.isMe) || (showOpponentCards && !player.folded)
+        // Reveal real faces for the hero or when the toggle is on — even if the
+        // player folded, so a voluntarily-shown mucked hand (e.g. a PokerNow
+        // post-fold show) is visible. PlayerSeat dims folded seats.
+        const showHoleCards = player.isMe || showOpponentCards
 
         return (
           <PlayerSeat
@@ -256,8 +265,9 @@ export default function PokerTable({ hand, state, showOpponentCards }: Props) {
             posLabel={displayPosition(player.position, hand.players.length)}
             bigBlind={hand.bigBlind}
             showHoleCards={showHoleCards}
-            made={showHoleCards ? madeOf(player.holeCards) : null}
-            equity={showOpponentCards ? equities[player.seatNumber] : undefined}
+            holeCount={holeCount}
+            made={showHoleCards && !player.folded ? madeOf(player.holeCards) : null}
+            equity={showOpponentCards && !player.folded ? equities[player.seatNumber] : undefined}
             x={px}
             y={py}
           />

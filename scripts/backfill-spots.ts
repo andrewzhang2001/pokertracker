@@ -46,6 +46,8 @@ async function main() {
   `
   await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS table_kind text`
   await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS game text`
+  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS faced_bb numeric`
+  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS size_bucket text`
   await sql`CREATE INDEX IF NOT EXISTS preflop_spots_lookup ON preflop_spots (game, table_kind, report_type, pos_a, pos_b, is_hero)`
   await sql`CREATE INDEX IF NOT EXISTS preflop_spots_hand ON preflop_spots (hand_id)`
 
@@ -70,10 +72,10 @@ async function main() {
     const batch = spots.slice(i, i + CHUNK)
     await sql`
       INSERT INTO preflop_spots (
-        hand_id, game, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, owner_id)
+        hand_id, game, table_kind, report_type, pos_a, pos_b, multiway, combo, action, is_hero, stack_bb, key_stack_bb, faced_bb, size_bucket, owner_id)
       SELECT * FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS x(
         hand_id text, game text, table_kind text, report_type text, pos_a text, pos_b text, multiway boolean,
-        combo text, action text, is_hero boolean, stack_bb numeric, key_stack_bb numeric, owner_id text)`
+        combo text, action text, is_hero boolean, stack_bb numeric, key_stack_bb numeric, faced_bb numeric, size_bucket text, owner_id text)`
     done += batch.length
     console.log(`inserted ${done}/${spots.length}`)
   }

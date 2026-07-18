@@ -4,7 +4,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { parseHandHistories } from '../parseHandHistory'
 import {
-  buildReport, buildReportFromGrid, MIN_BB,
+  buildReport, buildReportFromGrid, MIN_BB, SIZE_OPTIONS,
   RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, LIMP_ISO_TAGS,
   type ReportSel, type ReportGridRow, type Subject, type SolverTable, type ReportResult,
 } from '../reports'
@@ -26,10 +26,10 @@ function gridFromHands(hs: ParsedHand[]): ReportGridRow[] {
   for (const h of hs) {
     for (const s of spotsForHand(h)) {
       if (s.stack_bb < MIN_BB || s.key_stack_bb < MIN_BB) continue // matches SQL WHERE
-      const key = `${s.game}|${s.table_kind}|${s.report_type}|${s.pos_a}|${s.pos_b}|${s.multiway}|${s.combo}|${s.action}`
+      const key = `${s.game}|${s.table_kind}|${s.report_type}|${s.pos_a}|${s.pos_b}|${s.multiway}|${s.combo}|${s.action}|${s.size_bucket}`
       let row = map.get(key)
       if (!row) {
-        row = { game: s.game, table_kind: s.table_kind, report_type: s.report_type, pos_a: s.pos_a, pos_b: s.pos_b, multiway: s.multiway, combo: s.combo, action: s.action, hero: 0, pop: 0 }
+        row = { game: s.game, table_kind: s.table_kind, report_type: s.report_type, pos_a: s.pos_a, pos_b: s.pos_b, multiway: s.multiway, combo: s.combo, action: s.action, size_bucket: s.size_bucket, hero: 0, pop: 0 }
         map.set(key, row)
       }
       if (s.is_hero) row.hero++; else row.pop++
@@ -43,8 +43,12 @@ const grid = gridFromHands(hands)
 // Every 6-max report tile shown in the menu.
 const SELS_6MAX: ReportSel[] = [
   ...RFI_POSITIONS.map(pos => ({ type: 'rfi', pos }) as ReportSel),
-  ...VS_RFI_DEFENDERS.flatMap(d => openersFor(d).map(o => ({ type: 'vsrfi', defender: d, opener: o }) as ReportSel)),
-  ...VS3BET_REPORTS.map(r => ({ type: 'vs3bet', opener: r.opener, tag: r.tag }) as ReportSel),
+  // vs-RFI / vs-3-bet fan out over every faced-size bucket so the grid & hands
+  // paths must agree on the size slicing too (not just the default).
+  ...VS_RFI_DEFENDERS.flatMap(d => openersFor(d).flatMap(o =>
+    SIZE_OPTIONS.open.map(sz => ({ type: 'vsrfi', defender: d, opener: o, size: sz.key }) as ReportSel))),
+  ...VS3BET_REPORTS.flatMap(r =>
+    SIZE_OPTIONS.threebet.map(sz => ({ type: 'vs3bet', opener: r.opener, tag: r.tag, size: sz.key }) as ReportSel)),
   ...LIMP_ISO_TAGS.flatMap(iso => (['all', 'hu', 'multi'] as const).map(mw => ({ type: 'limpiso', iso, multiway: mw }) as ReportSel)),
 ]
 const SELS_HU: ReportSel[] = [

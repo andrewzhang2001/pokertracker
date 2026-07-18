@@ -16,12 +16,24 @@ export interface GraphStats {
   bbPer100: number
   adjBbPer100: number
   totalRakeBB: number
+  rakeBbPer100: number
   points: { i: number; cum: number; cumAdj: number }[]
 }
 
 // One hand's persisted result numbers (stored in the DB so the graph never has
 // to re-run all-in simulations). adjNet falls back to net when not stored.
 export interface GraphRow { playedAt: number | null; net: number; adjNet: number; rake: number }
+
+// Any seat's net for one hand (in BB) = final stack − starting stack. Zero-sum
+// across a hand (minus rake), so a person's own result — not hero-centric.
+export function netForSeat(hand: ParsedHand, seat: number): number {
+  const bb = hand.bigBlind || 1
+  const p0 = hand.players.find(p => p.seatNumber === seat)
+  if (!p0) return 0
+  const end = computeHandState(hand, hand.actions.length - 1)
+  const final = end.players.find(p => p.seatNumber === seat)?.stack ?? p0.startingStack
+  return (final - p0.startingStack) / bb
+}
 
 // Hero's net for one hand (in BB), the all-in-adjusted net, and rake paid.
 // Exported so it can be computed ONCE at export time and stored.
@@ -97,6 +109,7 @@ function build(rows: GraphRow[]): GraphStats {
     bbPer100: n ? (cum / n) * 100 : 0,
     adjBbPer100: n ? (cumAdj / n) * 100 : 0,
     totalRakeBB: totalRake,
+    rakeBbPer100: n ? (totalRake / n) * 100 : 0,
     points,
   }
 }

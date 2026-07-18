@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "backfill-preflop": "esbuild scripts/backfill-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-preflop.mjs && node node_modules/.cache/bf-preflop.mjs",
-    "backfill-postflop": "esbuild scripts/backfill-flop-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-flop.mjs && node node_modules/.cache/bf-flop.mjs"
+    "backfill-postflop": "esbuild scripts/backfill-flop-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-flop.mjs && node node_modules/.cache/bf-flop.mjs",
+    "backfill-net": "esbuild scripts/backfill-hand-net.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-net.mjs && node node_modules/.cache/bf-net.mjs",
+    "backfill-reparse": "esbuild scripts/backfill-reparse.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-reparse.mjs && node node_modules/.cache/bf-reparse.mjs"
   },
   "dependencies": {
     "@clerk/backend": "^3.8.4",
