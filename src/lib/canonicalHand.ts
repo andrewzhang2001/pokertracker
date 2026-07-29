@@ -21,6 +21,8 @@ export interface HandRow {
   adj_net_bb: number | null   // all-in adjusted net (sims computed once, stored)
   rake_bb: number | null      // rake attributed to hero
   pot_type: string
+  hero_vpip: boolean          // analysis.heroVpip, promoted to a column so the
+                              // database view can filter+paginate it in SQL
   analysis: HandAnalysis
   parsed: Omit<ParsedHand, 'rawText'>
   raw_text: string
@@ -46,6 +48,7 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
     adj_net_bb: stat?.adjNet ?? null,
     rake_bb: stat?.rake ?? null,
     pot_type: analysis.potType,
+    hero_vpip: analysis.heroVpip,
     analysis,
     parsed: parsedNoRaw,
     raw_text: rawText,
