@@ -7,9 +7,11 @@ import { dedupeAndSort } from './lib/mergeHands'
 import { analyzeHand } from './lib/analyzeHand'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import { loadSolver, solverUrl } from './lib/solver'
+import { filterByStake, parseStakes, stakeSelectionLabel, stakesIn, writeStakes } from './lib/stakes'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
+import StakeFilter from './components/StakeFilter'
 import PostflopView from './components/PostflopView'
 import PostflopMenu from './components/PostflopMenu'
 import GraphView from './components/GraphView'
@@ -29,7 +31,7 @@ function parseView(p: string): View {
   if (p === '/import') return 'import'
   return 'landing'
 }
-function parseReportSel(p: string): ReportSel | null {
+function parseReportSel(p: string, q: URLSearchParams): ReportSel | null {
   let m = p.match(/^\/(?:reports|leakbuster)\/rfi\/([a-z0-9]+)/i)
   if (m) {
     const pos = m[1].toUpperCase()
@@ -50,7 +52,7 @@ function parseReportSel(p: string): ReportSel | null {
   m = p.match(/^\/(?:reports|leakbuster)\/limpiso\/(ip|oop)/i)
   if (m) {
     const iso = m[1].toLowerCase() as LimpIsoTag
-    const mw = new URLSearchParams(window.location.search).get('mw')
+    const mw = q.get('mw')
     const multiway: LimpMultiway = mw === 'hu' || mw === 'multi' ? mw : 'all'
     return { type: 'limpiso', iso, multiway }
   }
@@ -61,25 +63,44 @@ function parsePostflopSel(p: string): { formationId: string; nodeId: string } | 
   const m = p.match(/^\/postflop\/([a-z0-9-]+)\/([a-z0-9~-]+)/i)
   return m ? { formationId: m[1], nodeId: m[2] } : null
 }
-function reportUrl(sel: ReportSel, base: string): string {
-  return sel.type === 'rfi'
+// "?stake=…" for the reports menu (the only filter it carries), '' when unset.
+function stakeSuffix(stakes: string[]): string {
+  const q = new URLSearchParams()
+  writeStakes(q, stakes)
+  const qs = q.toString()
+  return qs ? `?${qs}` : ''
+}
+
+// Report URL = the report's path + the filters that survive navigation (the
+// stake selection everywhere, the multiway toggle on limp-vs-iso).
+function reportUrl(sel: ReportSel, base: string, stakes: string[]): string {
+  const path = sel.type === 'rfi'
     ? `${base}/rfi/${sel.pos.toLowerCase()}`
     : sel.type === 'vsrfi'
       ? `${base}/vsrfi/${sel.defender.toLowerCase()}/${sel.opener.toLowerCase()}`
       : sel.type === 'vs3bet'
         ? `${base}/vs3bet/${sel.opener.toLowerCase()}/${sel.tag}`
-        : `${base}/limpiso/${sel.iso}${sel.multiway !== 'all' ? `?mw=${sel.multiway}` : ''}`
+        : `${base}/limpiso/${sel.iso}`
+  const q = new URLSearchParams()
+  if (sel.type === 'limpiso' && sel.multiway !== 'all') q.set('mw', sel.multiway)
+  writeStakes(q, stakes)
+  const qs = q.toString()
+  return qs ? `${path}?${qs}` : path
 }
 
 export default function App() {
-  const [path, setPath] = useState(() => window.location.pathname)
+  // Location = pathname + query, so query-only filter changes re-render (and
+  // back/forward between two filter states works).
+  const [loc, setLoc] = useState(() => window.location.pathname + window.location.search)
+  const path = loc.split('?')[0]
+  const query = useMemo(() => new URLSearchParams(loc.slice(path.length)), [loc, path])
   const view = parseView(path)
-  const reportSel = parseReportSel(path)
+  const reportSel = parseReportSel(path, query)
 
   function navigate(to: string, replace = false) {
-    if (replace) { history.replaceState(null, '', to); setPath(to); return }
-    if (window.location.pathname !== to) history.pushState(null, '', to)
-    setPath(to)
+    if (replace) { history.replaceState(null, '', to); setLoc(to); return }
+    if (window.location.pathname + window.location.search !== to) history.pushState(null, '', to)
+    setLoc(to)
   }
 
   // import view state
@@ -105,6 +126,19 @@ export default function App() {
   const [drill, setDrill] = useState<{ hands: ParsedHand[]; notes: string[]; index: number } | null>(null)
   // GTO solver table for the current report (lazy-loaded), keyed by its url
   const [solver, setSolver] = useState<{ url: string; table: SolverTable } | null>(null)
+
+  // Stake filter for the reports — the stakes on offer are derived from the
+  // loaded hands, and the selection lives in the URL (?stake=plo25,plo50).
+  const stakeOptions = useMemo(() => stakesIn(reportHands), [reportHands])
+  // Drop stakes that aren't in the sample (stale link) so the URL can't pin the
+  // reports to an empty set — an unknown stake falls back to "all stakes".
+  const stakeSel = useMemo(() => {
+    const keys = parseStakes(query)
+    if (!keys.length || !stakeOptions.length) return keys
+    const known = new Set(stakeOptions.map(o => o.stake.key))
+    return keys.filter(k => known.has(k))
+  }, [query, stakeOptions])
+  const stakedHands = useMemo(() => filterByStake(reportHands, stakeSel), [reportHands, stakeSel])
 
   // Filters run client-side over the loaded hands (derived live via analyzeHand),
   // so no stored column / DB backfill is needed. Keep notes aligned to filtered hands.
@@ -149,7 +183,7 @@ export default function App() {
 
   // Browser back/forward.
   useEffect(() => {
-    const onPop = () => setPath(window.location.pathname)
+    const onPop = () => setLoc(window.location.pathname + window.location.search)
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
@@ -166,14 +200,14 @@ export default function App() {
 
   // Lazy-load the GTO solver table for the open report.
   useEffect(() => {
-    const sel = parseReportSel(path)
+    const sel = parseReportSel(path, query)
     if ((view !== 'reports' && view !== 'leakbuster') || !sel) return
     const url = solverUrl(sel)
     if (!url) return // solverless report (e.g. limp vs iso)
     let cancelled = false
     loadSolver(sel).then(table => { if (!cancelled) setSolver({ url, table }) }).catch(() => {})
     return () => { cancelled = true }
-  }, [view, path])
+  }, [view, path, query])
 
   // Decode shared link on first load — supports #id= (new) and #h= (legacy)
   useEffect(() => {
@@ -353,15 +387,32 @@ export default function App() {
     }
     if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
+    const stakeBar = (
+      <StakeFilter
+        options={stakeOptions}
+        selected={stakeSel}
+        onChange={keys => navigate(reportSel ? reportUrl(reportSel, base, keys) : `${base}${stakeSuffix(keys)}`, true)}
+      />
+    )
     if (reportSel === null) {
-      return <ReportsMenu hands={reportHands} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return (
+        <ReportsMenu
+          hands={stakedHands}
+          subject={subject}
+          title={title}
+          filterBar={stakeBar}
+          onOpen={sel => navigate(reportUrl(sel, base, stakeSel))}
+          onBack={() => navigate('/')}
+        />
+      )
     }
     const solverTable = solver && solver.url === solverUrl(reportSel) ? solver.table : undefined
+    const result = buildReport(stakedHands, reportSel, solverTable, subject)
     // Limp-vs-iso reports carry a heads-up / multiway filter in the URL query.
     const mwToggle = reportSel.type === 'limpiso' ? (
-      <div className="ml-auto flex rounded-full border border-gray-700 overflow-hidden text-xs">
+      <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
         {(['all', 'hu', 'multi'] as LimpMultiway[]).map(m => (
-          <button key={m} onClick={() => navigate(reportUrl({ ...reportSel, multiway: m }, base), true)}
+          <button key={m} onClick={() => navigate(reportUrl({ ...reportSel, multiway: m }, base, stakeSel), true)}
             className={`px-3 py-1 transition-colors ${reportSel.multiway === m ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
             {m === 'all' ? 'All' : m === 'hu' ? 'Heads-up' : 'Multiway'}
           </button>
@@ -370,10 +421,15 @@ export default function App() {
     ) : undefined
     return (
       <ReportsView
-        result={buildReport(reportHands, reportSel, solverTable, subject)}
-        headerExtra={mwToggle}
+        result={{ ...result, subtitle: `${result.subtitle} · ${stakeSelectionLabel(stakeSel, stakeOptions)}` }}
+        headerExtra={
+          <div className="ml-auto flex items-center gap-3">
+            {mwToggle}
+            {stakeBar}
+          </div>
+        }
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
-        onBack={() => navigate(base)}
+        onBack={() => navigate(`${base}${stakeSuffix(stakeSel)}`)}
       />
     )
   }
