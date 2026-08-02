@@ -1,10 +1,9 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
-import { exportHandsToDb, fetchHandsFromDb } from './lib/handsApi'
+import { exportHandsToDb, fetchHandsFromDb, fetchHandsPageFromDb, type VpipFilter } from './lib/handsApi'
 import { dedupeAndSort } from './lib/mergeHands'
-import { analyzeHand } from './lib/analyzeHand'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import { loadSolver, solverUrl } from './lib/solver'
 import type { ParsedHand } from './lib/types'
@@ -15,7 +14,10 @@ import PostflopMenu from './components/PostflopMenu'
 import GraphView from './components/GraphView'
 
 type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster' | 'postflop' | 'graph'
-type VpipFilter = 'all' | 'yes' | 'no'
+
+// Hands per page in the database browser. The whole `parsed` + `raw_text` blob
+// comes down per hand, so this trades round-trips against payload size.
+const DB_PAGE_SIZE = 100
 
 // --- Routing: the URL path is the source of truth for which view shows. ---
 // /  /import  /database  /reports[/rfi|/vsrfi/...]  /leakbuster[/...]
@@ -90,12 +92,21 @@ export default function App() {
   const [exportState, setExportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle')
   const [exportMsg, setExportMsg] = useState('')
 
-  // database view state
+  // database view state — one page at a time, filtered + counted server-side
   const [dbHands, setDbHands] = useState<ParsedHand[]>([])
   const [dbNotes, setDbNotes] = useState<string[]>([])
   const [dbStatus, setDbStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [dbError, setDbError] = useState<string | null>(null)
   const [vpipFilter, setVpipFilter] = useState<VpipFilter>('all')
+  const [dbPage, setDbPage] = useState(0)
+  // filtered = hands matching the VPIP filter (what gets paginated); total = all yours
+  const [dbCounts, setDbCounts] = useState({ total: 0, filtered: 0 })
+  // Identifies the page currently in dbHands (not the one being requested), so
+  // the replayer only remounts once new hands have actually landed.
+  const [dbLoadedKey, setDbLoadedKey] = useState<string | null>(null)
+  // Paging backwards off the first hand should land on the *last* hand of the
+  // previous page, so arrow-key navigation reads as one continuous list.
+  const [dbLandOn, setDbLandOn] = useState<'first' | 'last'>('first')
 
   // reports view state
   const [reportHands, setReportHands] = useState<ParsedHand[]>([])
@@ -106,31 +117,48 @@ export default function App() {
   // GTO solver table for the current report (lazy-loaded), keyed by its url
   const [solver, setSolver] = useState<{ url: string; table: SolverTable } | null>(null)
 
-  // Filters run client-side over the loaded hands (derived live via analyzeHand),
-  // so no stored column / DB backfill is needed. Keep notes aligned to filtered hands.
-  const dbFiltered = useMemo(() => {
-    return dbHands
-      .map((h, i) => ({ h, note: dbNotes[i] ?? '', orig: i }))
-      .filter(({ h }) => {
-        if (vpipFilter === 'all') return true
-        const v = analyzeHand(h).heroVpip
-        return vpipFilter === 'yes' ? v : !v
-      })
-  }, [dbHands, dbNotes, vpipFilter])
+  const dbPageCount = Math.max(1, Math.ceil(dbCounts.filtered / DB_PAGE_SIZE))
 
-  // Your own hands — the personal database browser.
-  async function loadDatabase() {
+  // Your own hands — the personal database browser. The VPIP filter is part of
+  // the query (not a client-side pass over the page) so that pages are full and
+  // the counts describe the whole filtered set rather than the current page.
+  async function loadDatabase(page: number, vpip: VpipFilter) {
     setDbStatus('loading')
     setDbError(null)
     try {
-      const { hands, notes } = await fetchHandsFromDb(true)
-      setDbHands(hands)
-      setDbNotes(notes)
+      const res = await fetchHandsPageFromDb({
+        limit: DB_PAGE_SIZE, offset: page * DB_PAGE_SIZE, vpip,
+      })
+      // Offset landed past the end (e.g. hands removed since the count) — retry at
+      // the top rather than showing an empty replayer.
+      if (!res.hands.length && res.filtered > 0 && page > 0) {
+        setDbCounts({ total: res.total, filtered: res.filtered })
+        setDbPage(0)
+        return
+      }
+      setDbHands(res.hands)
+      setDbNotes(res.notes)
+      setDbCounts({ total: res.total, filtered: res.filtered })
+      setDbLoadedKey(`${vpip}-${page}`)
       setDbStatus('idle')
     } catch (e) {
       setDbError(String((e as Error).message ?? e))
       setDbStatus('error')
     }
+  }
+
+  function goToDbPage(next: number, landOn: 'first' | 'last' = 'first') {
+    if (next < 0 || next > dbPageCount - 1 || next === dbPage) return
+    setDbLandOn(landOn)
+    setDbPage(next)
+  }
+
+  // Switching filters changes which hands exist, so any page number beyond the
+  // first is meaningless — start over at the top of the new result set.
+  function changeVpipFilter(next: VpipFilter) {
+    setVpipFilter(next)
+    setDbLandOn('first')
+    setDbPage(0)
   }
 
   // Leakbuster = your hands only; Reports/Postflop = the pooled sample.
@@ -157,12 +185,17 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
-  // Fetch data when entering database/reports/leakbuster/postflop (covers direct loads & refresh).
+  // Fetch data when entering reports/leakbuster/postflop (covers direct loads & refresh).
   useEffect(() => {
-    if (view === 'database') loadDatabase()
-    else if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports(view === 'leakbuster')
+    if (view === 'reports' || view === 'leakbuster' || view === 'postflop') loadReports(view === 'leakbuster')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view])
+
+  // The database view refetches per page and per filter, not just on entry.
+  useEffect(() => {
+    if (view === 'database') loadDatabase(dbPage, vpipFilter)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, dbPage, vpipFilter])
 
   // Lazy-load the GTO solver table for the open report.
   useEffect(() => {
@@ -276,38 +309,69 @@ export default function App() {
 
   // ---- Database ----
   if (view === 'database') {
-    if (dbStatus === 'loading') {
+    // Only block the whole screen on the first load; later page/filter fetches
+    // keep the current page on screen and show a spinner in the top bar.
+    if (dbStatus === 'loading' && dbLoadedKey === null) {
       return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
     }
     if (dbStatus === 'error') {
       return <CenteredMessage title="Couldn't load hands" detail={dbError ?? ''} onBack={() => navigate('/')} />
     }
-    if (!dbHands.length) {
+    if (!dbCounts.total) {
       return <CenteredMessage title="No hands saved yet" detail="Import some hands and export them to your database." onBack={() => navigate('/')} />
     }
 
+    const loading = dbStatus === 'loading'
+    const firstShown = dbPage * DB_PAGE_SIZE + 1
+    const lastShown = dbPage * DB_PAGE_SIZE + dbHands.length
+
     const filterBar = (
-      <label className="flex items-center gap-1.5 text-xs text-gray-400">
-        VPIP
-        <select
-          value={vpipFilter}
-          onChange={e => setVpipFilter(e.target.value as VpipFilter)}
-          className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:border-yellow-500"
-        >
-          <option value="all">All</option>
-          <option value="yes">VPIP only</option>
-          <option value="no">No VPIP</option>
-        </select>
-        <span className="text-gray-600">{dbFiltered.length}/{dbHands.length}</span>
-      </label>
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-1.5 text-xs text-gray-400">
+          VPIP
+          <select
+            value={vpipFilter}
+            onChange={e => changeVpipFilter(e.target.value as VpipFilter)}
+            className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:border-yellow-500"
+          >
+            <option value="all">All</option>
+            <option value="yes">VPIP only</option>
+            <option value="no">No VPIP</option>
+          </select>
+          {/* matching / total — only differs when a filter is on */}
+          <span className="text-gray-600">
+            {dbCounts.filtered}{vpipFilter !== 'all' ? `/${dbCounts.total}` : ''}
+          </span>
+        </label>
+        {dbCounts.filtered > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-gray-400">
+            <button
+              onClick={() => goToDbPage(dbPage - 1, 'first')}
+              disabled={dbPage === 0 || loading}
+              title="Newer hands"
+              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30"
+            >‹</button>
+            <span className="tabular-nums">
+              {loading ? '…' : `${firstShown}–${lastShown}`} of {dbCounts.filtered}
+            </span>
+            <button
+              onClick={() => goToDbPage(dbPage + 1, 'first')}
+              disabled={dbPage >= dbPageCount - 1 || loading}
+              title="Older hands"
+              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30"
+            >›</button>
+            <span className="text-gray-600">pg {dbPage + 1}/{dbPageCount}</span>
+          </div>
+        )}
+      </div>
     )
 
-    if (!dbFiltered.length) {
+    if (!dbCounts.filtered) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
           <h1 className="text-2xl font-bold text-white">No hands match this filter</h1>
           <div>{filterBar}</div>
-          <button onClick={() => setVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
+          <button onClick={() => changeVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
           <button onClick={() => navigate('/')} className="text-xs text-gray-500 hover:text-white">← Home</button>
         </div>
       )
@@ -315,13 +379,19 @@ export default function App() {
 
     return (
       <HandReplayer
-        key={`db-${vpipFilter}-${dbFiltered.length}`}
-        hands={dbFiltered.map(x => x.h)}
-        handNotes={dbFiltered.map(x => x.note)}
+        // Remount per loaded page so the hand cursor resets to the right edge.
+        key={`db-${dbLoadedKey}`}
+        hands={dbHands}
+        handNotes={dbNotes}
+        initialHandIndex={dbLandOn === 'last' ? Math.max(0, dbHands.length - 1) : 0}
         onUpdateNote={(idx, value) => {
-          const orig = dbFiltered[idx].orig
-          setDbNotes(prev => { const n = [...prev]; n[orig] = value; return n })
+          setDbNotes(prev => { const n = [...prev]; n[idx] = value; return n })
         }}
+        // ↑/↓ off either end of the page continues into the adjacent one. Gated
+        // on `loading` like the pager buttons: the page cursor has already moved
+        // while a fetch is in flight, so a held key would otherwise skip pages.
+        onPastStart={dbPage > 0 && !loading ? () => goToDbPage(dbPage - 1, 'last') : undefined}
+        onPastEnd={dbPage < dbPageCount - 1 && !loading ? () => goToDbPage(dbPage + 1, 'first') : undefined}
         onBack={() => navigate('/')}
         backLabel="← Home"
         topBarExtra={filterBar}
