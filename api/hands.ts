@@ -18,6 +18,15 @@ const DEFAULT_PAGE_SIZE = 100
 // pagination exists to fix.
 const MAX_PAGE_SIZE = 500
 
+// Chunk size for the aggregate feed (Reports / Postflop / Leakbuster). Those
+// consumers need every hand, but "every hand" is no longer something one query
+// can return: Neon caps an HTTP response at 64 MB and a stored hand runs
+// ~4-5 KB (`parsed` ≈ 2.5-4 KB, `raw_text` ≈ 1-1.5 KB), so the pool crossed the
+// cap somewhere past ~13k hands and every aggregate load started failing with
+// "response is too large". The client stitches the chunks back together.
+const DEFAULT_CHUNK_SIZE = 500
+const MAX_CHUNK_SIZE = 2000
+
 function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
   const n = Number.parseInt(raw ?? '', 10)
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback
@@ -75,6 +84,14 @@ async function ensureTable() {
     CREATE INDEX IF NOT EXISTS hands_owner_order_idx
     ON hands (owner_id, played_at DESC NULLS LAST, created_at DESC)
   `
+  // Same order, across the whole pool: the population Reports / Postflop feed
+  // isn't filtered by owner, so it can't use the index above. Without this each
+  // chunk re-sorts the entire table (LIMIT+OFFSET makes that a top-N over every
+  // row before it), and the sort carries the wide `parsed` / `raw_text` columns.
+  await sql`
+    CREATE INDEX IF NOT EXISTS hands_pool_order_idx
+    ON hands (played_at DESC NULLS LAST, created_at DESC, id DESC)
+  `
   // Empties itself once backfillHeroVpip has run, which is what makes calling
   // that on every request cheap (the planner finds no candidate rows).
   await sql`
@@ -129,10 +146,10 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ rows })
       }
       // Paged slice of YOUR hands for the database browser: a `limit` opts into
-      // pagination, and the VPIP filter is applied in SQL so the page is a page
+      // this branch, and the VPIP filter is applied in SQL so the page is a page
       // of *matching* hands and the counts describe the whole filtered set.
-      // Without `limit` the queries below stay unpaginated for the aggregate
-      // consumers (Leakbuster / Reports / Postflop), which need every hand.
+      // (The aggregate feed below pages with `chunk` instead — it reads a whole
+      // sample rather than one screenful, and carries no VPIP filter or notes.)
       if (view === 'mine' && params.has('limit')) {
         await backfillHeroVpip(ownerId)
         const limit = clampInt(params.get('limit'), 1, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE)
@@ -164,21 +181,43 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ hands: rows, total, filtered, limit, offset })
       }
 
-      // view=mine → just your hands (your-hands review / Leakbuster).
-      // default → the whole pool (population Reports + Postflop spots).
-      const rows = view === 'mine'
+      // Aggregate feed — one chunk of the sample the reports are built from.
+      // view=mine → just your hands (Leakbuster); default → the whole pool
+      // (population Reports + Postflop spots). `total` accompanies the first
+      // chunk so the client knows how many more to ask for; recounting on every
+      // chunk would be wasted work. `notes` is omitted: these consumers only
+      // read the hands, and the drill-down replayer starts from blank notes.
+      //
+      // `id` breaks ties in the sort so the order is total — with only
+      // (played_at, created_at) a chunk boundary landing inside a tie group
+      // could repeat or skip hands between requests.
+      const limit = clampInt(params.get('chunk'), 1, MAX_CHUNK_SIZE, DEFAULT_CHUNK_SIZE)
+      const offset = clampInt(params.get('offset'), 0, Number.MAX_SAFE_INTEGER, 0)
+      const mine = view === 'mine'
+
+      let total: number | undefined
+      if (offset === 0) {
+        const [counts] = (mine
+          ? await sql`SELECT count(*)::int AS total FROM hands WHERE owner_id = ${ownerId}`
+          : await sql`SELECT count(*)::int AS total FROM hands`) as { total: number }[]
+        total = counts?.total ?? 0
+      }
+
+      const rows = mine
         ? await sql`
-            SELECT parsed, raw_text, notes
+            SELECT parsed, raw_text
             FROM hands
             WHERE owner_id = ${ownerId}
-            ORDER BY played_at DESC NULLS LAST, created_at DESC
+            ORDER BY played_at DESC NULLS LAST, created_at DESC, id DESC
+            LIMIT ${limit} OFFSET ${offset}
           `
         : await sql`
-            SELECT parsed, raw_text, notes
+            SELECT parsed, raw_text
             FROM hands
-            ORDER BY played_at DESC NULLS LAST, created_at DESC
+            ORDER BY played_at DESC NULLS LAST, created_at DESC, id DESC
+            LIMIT ${limit} OFFSET ${offset}
           `
-      return Response.json({ hands: rows })
+      return Response.json({ hands: rows, total, limit, offset })
     }
 
     if (req.method === 'POST') {

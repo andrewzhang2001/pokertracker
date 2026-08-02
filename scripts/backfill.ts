@@ -27,8 +27,23 @@ async function main() {
   await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS adj_net_bb numeric`
   await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS rake_bb numeric`
 
-  const rows = await sql`SELECT id, raw_text, notes FROM hands` as { id: string; raw_text: string; notes: string | null }[]
-  console.log(`loaded ${rows.length} hands`)
+  // Read in id order, a slice at a time: one SELECT over the whole table now
+  // returns more than Neon's 64 MB response cap allows. `id` is the primary
+  // key, so paging on it is an index scan and needs no ORDER BY elsewhere.
+  const READ_CHUNK = 2000
+  const rows: { id: string; raw_text: string; notes: string | null }[] = []
+  for (let cursor = ''; ;) {
+    const slice = await sql`
+      SELECT id, raw_text, notes FROM hands
+      WHERE id > ${cursor}
+      ORDER BY id
+      LIMIT ${READ_CHUNK}
+    ` as { id: string; raw_text: string; notes: string | null }[]
+    if (!slice.length) break
+    rows.push(...slice)
+    cursor = slice[slice.length - 1].id
+    console.log(`loaded ${rows.length} hands`)
+  }
 
   const recomputed: unknown[] = []
   let failed = 0

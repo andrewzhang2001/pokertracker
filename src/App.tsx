@@ -133,6 +133,8 @@ export default function App() {
   const [reportHands, setReportHands] = useState<ParsedHand[]>([])
   const [reportStatus, setReportStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [reportError, setReportError] = useState<string | null>(null)
+  // The sample arrives in chunks, so a large one takes a few seconds — show it landing.
+  const [reportProgress, setReportProgress] = useState({ loaded: 0, total: 0 })
   // drill-down: viewing a subset of hands (from a report bucket) in the replayer
   const [drill, setDrill] = useState<{ hands: ParsedHand[]; notes: string[]; index: number } | null>(null)
   // GTO solver table for the current report (lazy-loaded), keyed by its url
@@ -152,6 +154,12 @@ export default function App() {
   const stakedHands = useMemo(() => filterByStake(reportHands, stakeSel), [reportHands, stakeSel])
 
   const dbPageCount = Math.max(1, Math.ceil(dbCounts.filtered / DB_PAGE_SIZE))
+
+  // "1,500 / 18,320 hands" under the reports/postflop loading message. Blank
+  // until the first chunk reports the total, so it never shows "0 / 0".
+  const loadProgress = reportProgress.total
+    ? `${reportProgress.loaded.toLocaleString()} / ${reportProgress.total.toLocaleString()} hands`
+    : undefined
 
   // Your own hands — the personal database browser. The VPIP filter is part of
   // the query (not a client-side pass over the page) so that pages are full and
@@ -199,8 +207,9 @@ export default function App() {
   async function loadReports(mine: boolean) {
     setReportStatus('loading')
     setReportError(null)
+    setReportProgress({ loaded: 0, total: 0 })
     try {
-      const { hands } = await fetchHandsFromDb(mine)
+      const hands = await fetchHandsFromDb(mine, (loaded, total) => setReportProgress({ loaded, total }))
       setReportHands(hands)
       setReportStatus('idle')
     } catch (e) {
@@ -455,7 +464,7 @@ export default function App() {
         />
       )
     }
-    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
+    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" detail={loadProgress} onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
     const stakeBar = (
       <StakeFilter
@@ -528,7 +537,7 @@ export default function App() {
         />
       )
     }
-    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
+    if (reportStatus === 'loading') return <CenteredMessage title="Loading hands…" detail={loadProgress} onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load hands" detail={reportError ?? ''} onBack={() => navigate('/')} />
     const pfSel = parsePostflopSel(path)
     if (!pfSel) {

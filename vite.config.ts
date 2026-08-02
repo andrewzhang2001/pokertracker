@@ -12,6 +12,8 @@ function readBody(req: IncomingMessage): Promise<string> {
 // Keep in sync with api/hands.ts — this middleware is the local-dev mirror of it.
 const DEFAULT_PAGE_SIZE = 100
 const MAX_PAGE_SIZE = 500
+const DEFAULT_CHUNK_SIZE = 500
+const MAX_CHUNK_SIZE = 2000
 
 function clampInt(raw: string | null, min: number, max: number, fallback: number): number {
   const n = Number.parseInt(raw ?? '', 10)
@@ -55,6 +57,9 @@ function apiRoutes(env: Record<string, string>): Plugin {
           await sql`
             CREATE INDEX IF NOT EXISTS hands_owner_order_idx
             ON hands (owner_id, played_at DESC NULLS LAST, created_at DESC)`
+          await sql`
+            CREATE INDEX IF NOT EXISTS hands_pool_order_idx
+            ON hands (played_at DESC NULLS LAST, created_at DESC, id DESC)`
           await sql`
             CREATE INDEX IF NOT EXISTS hands_hero_vpip_backfill_idx
             ON hands (owner_id) WHERE hero_vpip IS NULL`
@@ -105,15 +110,30 @@ function apiRoutes(env: Record<string, string>): Plugin {
               res.end(JSON.stringify({ hands: page, total, filtered, limit, offset }))
               return
             }
-            const rows = view === 'mine'
+            // Aggregate feed (Reports / Postflop / Leakbuster), one chunk at a
+            // time — the whole sample in a single response exceeds Neon's 64 MB
+            // limit. `total` rides along with the first chunk only.
+            const chunk = clampInt(params.get('chunk'), 1, MAX_CHUNK_SIZE, DEFAULT_CHUNK_SIZE)
+            const from = clampInt(params.get('offset'), 0, Number.MAX_SAFE_INTEGER, 0)
+            const mine = view === 'mine'
+            let count: number | undefined
+            if (from === 0) {
+              const [c] = (mine
+                ? await sql`SELECT count(*)::int AS total FROM hands WHERE owner_id = ${ownerId}`
+                : await sql`SELECT count(*)::int AS total FROM hands`) as { total: number }[]
+              count = c?.total ?? 0
+            }
+            const rows = mine
               ? await sql`
-                  SELECT parsed, raw_text, notes FROM hands
+                  SELECT parsed, raw_text FROM hands
                   WHERE owner_id = ${ownerId}
-                  ORDER BY played_at DESC NULLS LAST, created_at DESC`
+                  ORDER BY played_at DESC NULLS LAST, created_at DESC, id DESC
+                  LIMIT ${chunk} OFFSET ${from}`
               : await sql`
-                  SELECT parsed, raw_text, notes FROM hands
-                  ORDER BY played_at DESC NULLS LAST, created_at DESC`
-            res.end(JSON.stringify({ hands: rows }))
+                  SELECT parsed, raw_text FROM hands
+                  ORDER BY played_at DESC NULLS LAST, created_at DESC, id DESC
+                  LIMIT ${chunk} OFFSET ${from}`
+            res.end(JSON.stringify({ hands: rows, total: count, limit: chunk, offset: from }))
             return
           }
 
