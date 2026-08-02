@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { UserButton } from '@clerk/clerk-react'
 import { parseHandHistories, diagnose } from './lib/parseHandHistory'
 import { loadShareById, decodeLegacyShare } from './lib/shareUrl'
@@ -151,17 +151,6 @@ export default function App() {
   }, [query, stakeOptions])
   const stakedHands = useMemo(() => filterByStake(reportHands, stakeSel), [reportHands, stakeSel])
 
-  // Filters run client-side over the loaded hands (derived live via analyzeHand),
-  // so no stored column / DB backfill is needed. Keep notes aligned to filtered hands.
-  const dbFiltered = useMemo(() => {
-    return dbHands
-      .map((h, i) => ({ h, note: dbNotes[i] ?? '', orig: i }))
-      .filter(({ h }) => {
-        if (vpipFilter === 'all') return true
-        const v = analyzeHand(h).heroVpip
-        return vpipFilter === 'yes' ? v : !v
-      })
-  }, [dbHands, dbNotes, vpipFilter])
   const dbPageCount = Math.max(1, Math.ceil(dbCounts.filtered / DB_PAGE_SIZE))
 
   // Your own hands — the personal database browser. The VPIP filter is part of
