@@ -7,10 +7,12 @@ import { dedupeAndSort } from './lib/mergeHands'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, type ReportSel, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
 import { loadSolver, solverUrl } from './lib/solver'
 import { filterByStake, parseStakes, stakeSelectionLabel, stakesIn, writeStakes } from './lib/stakes'
+import { parseGame, writeGame, type GameFilter, type GameKey } from './lib/games'
 import type { ParsedHand } from './lib/types'
 import HandReplayer from './components/HandReplayer'
 import ReportsView, { ReportsMenu } from './components/ReportsView'
 import StakeFilter from './components/StakeFilter'
+import GameFilterPills from './components/GameFilter'
 import PostflopView from './components/PostflopView'
 import PostflopMenu from './components/PostflopMenu'
 import GraphView from './components/GraphView'
@@ -98,6 +100,17 @@ export default function App() {
   const query = useMemo(() => new URLSearchParams(loc.slice(path.length)), [loc, path])
   const view = parseView(path)
   const reportSel = parseReportSel(path, query)
+  // Game variant (?game=plo) — shared by the database browser and the graph, and
+  // kept in the URL so "the PLO graph" is a link you can come back to.
+  const gameSel = parseGame(query)
+
+  // Swap the game filter without disturbing the rest of the query.
+  function gameHref(next: GameFilter): string {
+    const q = new URLSearchParams(query)
+    writeGame(q, next)
+    const qs = q.toString()
+    return qs ? `${path}?${qs}` : path
+  }
 
   function navigate(to: string, replace = false) {
     if (replace) { history.replaceState(null, '', to); setLoc(to); return }
@@ -120,8 +133,10 @@ export default function App() {
   const [dbError, setDbError] = useState<string | null>(null)
   const [vpipFilter, setVpipFilter] = useState<VpipFilter>('all')
   const [dbPage, setDbPage] = useState(0)
-  // filtered = hands matching the VPIP filter (what gets paginated); total = all yours
-  const [dbCounts, setDbCounts] = useState({ total: 0, filtered: 0 })
+  // filtered = hands matching the filters (what gets paginated); total = all yours;
+  // games = hands per variant, so the game pills can show their sizes.
+  const [dbCounts, setDbCounts] = useState<{ total: number; filtered: number; games: Record<GameKey, number> }>(
+    { total: 0, filtered: 0, games: { nlhe: 0, plo: 0, other: 0 } })
   // Identifies the page currently in dbHands (not the one being requested), so
   // the replayer only remounts once new hands have actually landed.
   const [dbLoadedKey, setDbLoadedKey] = useState<string | null>(null)
@@ -153,27 +168,27 @@ export default function App() {
 
   const dbPageCount = Math.max(1, Math.ceil(dbCounts.filtered / DB_PAGE_SIZE))
 
-  // Your own hands — the personal database browser. The VPIP filter is part of
-  // the query (not a client-side pass over the page) so that pages are full and
-  // the counts describe the whole filtered set rather than the current page.
-  async function loadDatabase(page: number, vpip: VpipFilter) {
+  // Your own hands — the personal database browser. The VPIP and game filters are
+  // part of the query (not a client-side pass over the page) so that pages are
+  // full and the counts describe the whole filtered set, not the current page.
+  async function loadDatabase(page: number, vpip: VpipFilter, game: GameFilter) {
     setDbStatus('loading')
     setDbError(null)
     try {
       const res = await fetchHandsPageFromDb({
-        limit: DB_PAGE_SIZE, offset: page * DB_PAGE_SIZE, vpip,
+        limit: DB_PAGE_SIZE, offset: page * DB_PAGE_SIZE, vpip, game,
       })
       // Offset landed past the end (e.g. hands removed since the count) — retry at
       // the top rather than showing an empty replayer.
       if (!res.hands.length && res.filtered > 0 && page > 0) {
-        setDbCounts({ total: res.total, filtered: res.filtered })
+        setDbCounts({ total: res.total, filtered: res.filtered, games: res.games })
         setDbPage(0)
         return
       }
       setDbHands(res.hands)
       setDbNotes(res.notes)
-      setDbCounts({ total: res.total, filtered: res.filtered })
-      setDbLoadedKey(`${vpip}-${page}`)
+      setDbCounts({ total: res.total, filtered: res.filtered, games: res.games })
+      setDbLoadedKey(`${game}-${vpip}-${page}`)
       setDbStatus('idle')
     } catch (e) {
       setDbError(String((e as Error).message ?? e))
@@ -193,6 +208,14 @@ export default function App() {
     setVpipFilter(next)
     setDbLandOn('first')
     setDbPage(0)
+  }
+
+  // Same for the game filter, which additionally lives in the URL. `replace` so
+  // flipping between variants doesn't stack history entries.
+  function changeDbGame(next: GameFilter) {
+    setDbLandOn('first')
+    setDbPage(0)
+    navigate(gameHref(next), true)
   }
 
   // Leakbuster = your hands only; Reports/Postflop = the pooled sample.
@@ -227,9 +250,9 @@ export default function App() {
 
   // The database view refetches per page and per filter, not just on entry.
   useEffect(() => {
-    if (view === 'database') loadDatabase(dbPage, vpipFilter)
+    if (view === 'database') loadDatabase(dbPage, vpipFilter, gameSel)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, dbPage, vpipFilter])
+  }, [view, dbPage, vpipFilter, gameSel])
 
   // Lazy-load the GTO solver table for the open report.
   useEffect(() => {
@@ -361,6 +384,7 @@ export default function App() {
 
     const filterBar = (
       <div className="flex items-center gap-3">
+        <GameFilterPills counts={dbCounts.games} selected={gameSel} onChange={changeDbGame} />
         <label className="flex items-center gap-1.5 text-xs text-gray-400">
           VPIP
           <select
@@ -374,7 +398,7 @@ export default function App() {
           </select>
           {/* matching / total — only differs when a filter is on */}
           <span className="text-gray-600">
-            {dbCounts.filtered}{vpipFilter !== 'all' ? `/${dbCounts.total}` : ''}
+            {dbCounts.filtered}{vpipFilter !== 'all' || gameSel !== 'all' ? `/${dbCounts.total}` : ''}
           </span>
         </label>
         {dbCounts.filtered > 0 && (
@@ -403,9 +427,12 @@ export default function App() {
     if (!dbCounts.filtered) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
-          <h1 className="text-2xl font-bold text-white">No hands match this filter</h1>
+          <h1 className="text-2xl font-bold text-white">No hands match these filters</h1>
           <div>{filterBar}</div>
-          <button onClick={() => changeVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
+          <button
+            onClick={() => { changeVpipFilter('all'); changeDbGame('all') }}
+            className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
+          >Reset filters</button>
           <button onClick={() => navigate('/')} className="text-xs text-gray-500 hover:text-white">← Home</button>
         </div>
       )
@@ -506,7 +533,13 @@ export default function App() {
 
   // ---- Graph (hero results over time, from precomputed DB numbers) ----
   if (view === 'graph') {
-    return <GraphView onBack={() => navigate('/')} />
+    return (
+      <GraphView
+        onBack={() => navigate('/')}
+        game={gameSel}
+        onChangeGame={next => navigate(gameHref(next), true)}
+      />
+    )
   }
 
   // ---- Postflop spot browser ----

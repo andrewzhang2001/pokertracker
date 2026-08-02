@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { computeGraphFromRows, type GraphRow, type GraphStats } from '../lib/graph'
+import { computeGraphFromRows, graphGameCounts, type GraphRow, type GraphStats } from '../lib/graph'
 import { fetchGraphFromDb } from '../lib/handsApi'
+import { gameLabel, type GameFilter } from '../lib/games'
+import GameFilterPills from './GameFilter'
 
 interface Props {
   onBack: () => void
+  game: GameFilter
+  onChangeGame: (game: GameFilter) => void
 }
 
 const fmt = (n: number, dp = 1) => (n >= 0 ? '+' : '') + n.toFixed(dp)
@@ -56,10 +60,11 @@ function Chart({ points }: { points: { i: number; cum: number; cumAdj: number }[
   )
 }
 
-export default function GraphView({ onBack }: Props) {
+export default function GraphView({ onBack, game, onChangeGame }: Props) {
   const [rows, setRows] = useState<GraphRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Every hand comes down once; switching variants is a client-side re-slice.
   useEffect(() => {
     let cancelled = false
     fetchGraphFromDb()
@@ -68,20 +73,30 @@ export default function GraphView({ onBack }: Props) {
     return () => { cancelled = true }
   }, [])
 
-  const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows) : null), [rows])
+  const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows, game) : null), [rows, game])
+  const gameCounts = useMemo(() => graphGameCounts(rows ?? []), [rows])
 
   return (
     <div className="min-h-screen flex flex-col p-6 gap-5">
       <div className="flex items-center gap-3">
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <h1 className="text-2xl font-bold text-white">Graph</h1>
-        {g && <span className="text-gray-600 text-xs">{g.hands} hands · BB won/lost over time</span>}
+        {g && <span className="text-gray-600 text-xs">{g.hands} hands · {gameLabel(game)} · BB won/lost over time</span>}
+        {rows && (
+          <div className="ml-auto">
+            <GameFilterPills counts={gameCounts} selected={game} onChange={onChangeGame} />
+          </div>
+        )}
       </div>
 
       {error && <div className="text-red-400 text-sm">Couldn't load graph: {error}</div>}
       {!g && !error && <div className="text-gray-500 text-sm">Loading…</div>}
 
-      {g && (
+      {g && g.hands === 0 && (
+        <div className="text-gray-500 text-sm">No {gameLabel(game)} hands with a recorded result yet.</div>
+      )}
+
+      {g && g.hands > 0 && (
         <>
           <div className="flex flex-wrap gap-3">
             <Stat label="BB / 100" value={fmt(g.bbPer100, 2)} color={tone(g.bbPer100)} sub="actual winrate" />

@@ -2,6 +2,7 @@ import type { ParsedHand } from './types'
 import { analyzeHand, type HandAnalysis } from './analyzeHand'
 import { displayPosition } from './positionUtils'
 import { handStat } from './graph'
+import { handGame, type GameKey } from './games'
 
 // A row as stored in the `hands` table. snake_case keys match the SQL column
 // names so the API can insert via jsonb_to_recordset without remapping.
@@ -23,6 +24,8 @@ export interface HandRow {
   pot_type: string
   hero_vpip: boolean          // analysis.heroVpip, promoted to a column so the
                               // database view can filter+paginate it in SQL
+  game: GameKey               // 'nlhe' | 'plo' | 'other' — same reason: the
+                              // database view filters variants server-side
   analysis: HandAnalysis
   parsed: Omit<ParsedHand, 'rawText'>
   raw_text: string
@@ -49,6 +52,7 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
     rake_bb: stat?.rake ?? null,
     pot_type: analysis.potType,
     hero_vpip: analysis.heroVpip,
+    game: handGame(hand),
     analysis,
     parsed: parsedNoRaw,
     raw_text: rawText,

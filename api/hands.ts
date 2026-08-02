@@ -69,6 +69,9 @@ async function ensureTable() {
   // analysis.heroVpip promoted to a real column: the database view filters on
   // it while paginating, which can't be done client-side any more.
   await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS hero_vpip boolean`
+  // Game variant ('nlhe' | 'plo' | 'other'), for the same reason: the database
+  // view filters on it while paginating. Mirrors handGame() in src/lib/games.ts.
+  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS game text`
   // Matches the keyset order used by every listing query below, so paging deep
   // into a large account stays an index scan instead of a full sort.
   await sql`
@@ -80,6 +83,11 @@ async function ensureTable() {
   await sql`
     CREATE INDEX IF NOT EXISTS hands_hero_vpip_backfill_idx
     ON hands (owner_id) WHERE hero_vpip IS NULL
+  `
+  // Same trick for the game column's one-time backfill.
+  await sql`
+    CREATE INDEX IF NOT EXISTS hands_game_backfill_idx
+    ON hands (owner_id) WHERE game IS NULL
   `
 }
 
@@ -104,6 +112,21 @@ async function backfillHeroVpip(ownerId: string) {
   `
 }
 
+// Populate `game` for this account's rows exported before the column existed.
+// Same rule as handGame() in src/lib/games.ts: the game-type field names the
+// variant for cash hands, and tournament headers (whose game type parses empty)
+// still carry it in the header line — hence the COALESCE onto raw_text.
+async function backfillGame(ownerId: string) {
+  await sql`
+    UPDATE hands SET game = CASE
+      WHEN COALESCE(NULLIF(game_type, ''), left(raw_text, 200)) ILIKE '%omaha%' THEN 'plo'
+      WHEN COALESCE(NULLIF(game_type, ''), left(raw_text, 200)) ILIKE '%hold%'  THEN 'nlhe'
+      ELSE 'other'
+    END
+    WHERE game IS NULL AND owner_id = ${ownerId}
+  `
+}
+
 async function handler(req: Request): Promise<Response> {
   if (!connectionString) {
     return Response.json({ error: 'Database not configured' }, { status: 500 })
@@ -119,9 +142,13 @@ async function handler(req: Request): Promise<Response> {
       const params = new URL(req.url).searchParams
       const view = params.get('view')
       // Lightweight graph feed: YOUR own result numbers, oldest first.
+      // `game` rides along per row rather than being filtered here: the feed is
+      // four numbers a hand, so the client can switch variants without a
+      // round-trip (and count the hands in each to build the filter).
       if (view === 'graph') {
+        await backfillGame(ownerId)
         const rows = await sql`
-          SELECT played_at, net_bb, adj_net_bb, rake_bb
+          SELECT played_at, net_bb, adj_net_bb, rake_bb, game
           FROM hands
           WHERE net_bb IS NOT NULL AND owner_id = ${ownerId}
           ORDER BY played_at ASC NULLS LAST, created_at ASC
@@ -129,39 +156,54 @@ async function handler(req: Request): Promise<Response> {
         return Response.json({ rows })
       }
       // Paged slice of YOUR hands for the database browser: a `limit` opts into
-      // pagination, and the VPIP filter is applied in SQL so the page is a page
-      // of *matching* hands and the counts describe the whole filtered set.
+      // pagination, and the VPIP + game filters are applied in SQL so the page is
+      // a page of *matching* hands and the counts describe the whole filtered set.
       // Without `limit` the queries below stay unpaginated for the aggregate
       // consumers (Leakbuster / Reports / Postflop), which need every hand.
       if (view === 'mine' && params.has('limit')) {
         await backfillHeroVpip(ownerId)
+        await backfillGame(ownerId)
         const limit = clampInt(params.get('limit'), 1, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE)
         const offset = clampInt(params.get('offset'), 0, Number.MAX_SAFE_INTEGER, 0)
         // null = no VPIP filter; true/false = keep only that bucket.
         const vpip = params.get('vpip')
         const want = vpip === 'yes' ? true : vpip === 'no' ? false : null
+        // null = every variant; otherwise one of nlhe / plo / other.
+        const gameParam = params.get('game')
+        const game = gameParam === 'nlhe' || gameParam === 'plo' || gameParam === 'other' ? gameParam : null
 
-        // One pass gives both the unfiltered total and each bucket's size, so
-        // the client can render "matching / total" without a second round-trip.
+        // One pass gives the unfiltered total, the size of the filtered set, and
+        // each variant's size, so the client can render "matching / total" and
+        // the game pills without extra round-trips. The per-variant counts honour
+        // the VPIP filter but not the game filter — they're what you'd get by
+        // switching to that variant, so they must not shrink when one is picked.
         const [counts] = await sql`
           SELECT count(*)::int AS total,
-                 count(*) FILTER (WHERE hero_vpip IS TRUE)::int AS vpip_yes
+                 count(*) FILTER (WHERE ${want}::boolean IS NULL
+                                    OR (hero_vpip IS TRUE) = ${want}::boolean)::int AS vpip_matching,
+                 count(*) FILTER (WHERE (${want}::boolean IS NULL OR (hero_vpip IS TRUE) = ${want}::boolean)
+                                    AND game = 'nlhe')::int AS nlhe,
+                 count(*) FILTER (WHERE (${want}::boolean IS NULL OR (hero_vpip IS TRUE) = ${want}::boolean)
+                                    AND game = 'plo')::int AS plo,
+                 count(*) FILTER (WHERE (${want}::boolean IS NULL OR (hero_vpip IS TRUE) = ${want}::boolean)
+                                    AND (game IS NULL OR game NOT IN ('nlhe', 'plo')))::int AS other
           FROM hands WHERE owner_id = ${ownerId}
-        ` as { total: number; vpip_yes: number }[]
+        ` as { total: number; vpip_matching: number; nlhe: number; plo: number; other: number }[]
         const total = counts?.total ?? 0
-        const vpipYes = counts?.vpip_yes ?? 0
-        // NULL hero_vpip counts as "no VPIP", matching the IS TRUE test below.
-        const filtered = want === null ? total : want ? vpipYes : total - vpipYes
+        const games = { nlhe: counts?.nlhe ?? 0, plo: counts?.plo ?? 0, other: counts?.other ?? 0 }
+        // Hands matching *both* filters — i.e. exactly what gets paginated.
+        const filtered = game === null ? (counts?.vpip_matching ?? 0) : games[game]
 
         const rows = await sql`
           SELECT parsed, raw_text, notes
           FROM hands
           WHERE owner_id = ${ownerId}
             AND (${want}::boolean IS NULL OR (hero_vpip IS TRUE) = ${want}::boolean)
+            AND (${game}::text IS NULL OR COALESCE(game, 'other') = ${game}::text)
           ORDER BY played_at DESC NULLS LAST, created_at DESC
           LIMIT ${limit} OFFSET ${offset}
         `
-        return Response.json({ hands: rows, total, filtered, limit, offset })
+        return Response.json({ hands: rows, total, filtered, games, limit, offset })
       }
 
       // view=mine → just your hands (your-hands review / Leakbuster).
@@ -192,15 +234,16 @@ async function handler(req: Request): Promise<Response> {
       await sql`
         INSERT INTO hands (
           id, site, game_type, table_size, small_blind, big_blind, currency,
-          played_at, hero_position, net_bb, adj_net_bb, rake_bb, pot_type, hero_vpip, analysis, parsed, raw_text, notes, owner_id
+          played_at, hero_position, net_bb, adj_net_bb, rake_bb, pot_type, hero_vpip, game, analysis, parsed, raw_text, notes, owner_id
         )
         SELECT x.*, ${ownerId} FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS x(
           id text, site text, game_type text, table_size int, small_blind numeric,
           big_blind numeric, currency text, played_at bigint, hero_position text,
-          net_bb numeric, adj_net_bb numeric, rake_bb numeric, pot_type text, hero_vpip boolean, analysis jsonb, parsed jsonb, raw_text text, notes text
+          net_bb numeric, adj_net_bb numeric, rake_bb numeric, pot_type text, hero_vpip boolean, game text, analysis jsonb, parsed jsonb, raw_text text, notes text
         )
         ON CONFLICT (id) DO UPDATE SET
           hero_vpip     = EXCLUDED.hero_vpip,
+          game          = EXCLUDED.game,
           analysis      = EXCLUDED.analysis,
           parsed        = EXCLUDED.parsed,
           raw_text      = EXCLUDED.raw_text,

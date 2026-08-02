@@ -1,6 +1,7 @@
 import type { ParsedHand, ParsedCard } from './types'
 import { computeHandState } from './computeHandState'
 import { showdownEquities } from './equity'
+import { handGame, filterByGame, type GameFilter, type GameKey } from './games'
 
 // ---------------------------------------------------------------------------
 // Results graph: hero's BB won/lost over hands, plus winrate, all-in adjusted
@@ -20,7 +21,8 @@ export interface GraphStats {
 
 // One hand's persisted result numbers (stored in the DB so the graph never has
 // to re-run all-in simulations). adjNet falls back to net when not stored.
-export interface GraphRow { playedAt: number | null; net: number; adjNet: number; rake: number }
+// `game` rides along so the graph can be split by variant without refetching.
+export interface GraphRow { playedAt: number | null; net: number; adjNet: number; rake: number; game: GameKey }
 
 // Hero's net for one hand (in BB), the all-in-adjusted net, and rake paid.
 // Exported so it can be computed ONCE at export time and stored.
@@ -105,13 +107,24 @@ export function computeGraph(hands: ParsedHand[]): GraphStats {
   const rows: GraphRow[] = []
   for (const h of hands) {
     const s = handStat(h)
-    if (s) rows.push({ playedAt: h.playedAt, ...s })
+    if (s) rows.push({ playedAt: h.playedAt, game: handGame(h), ...s })
   }
   rows.sort((a, b) => (a.playedAt ?? 0) - (b.playedAt ?? 0))
   return build(rows)
 }
 
 // From stored DB numbers (no simulation) — the fast path the graph page uses.
-export function computeGraphFromRows(rows: GraphRow[]): GraphStats {
-  return build([...rows].sort((a, b) => (a.playedAt ?? 0) - (b.playedAt ?? 0)))
+// A game filter narrows the sample *before* the running total is accumulated,
+// so PLO and NLHE each get their own curve from zero rather than a slice of the
+// pooled one.
+export function computeGraphFromRows(rows: GraphRow[], game: GameFilter = 'all'): GraphStats {
+  const kept = filterByGame(rows, game, r => r.game)
+  return build([...kept].sort((a, b) => (a.playedAt ?? 0) - (b.playedAt ?? 0)))
+}
+
+// How many graphable hands there are of each variant — drives the filter pills.
+export function graphGameCounts(rows: GraphRow[]): Record<GameKey, number> {
+  const counts: Record<GameKey, number> = { nlhe: 0, plo: 0, other: 0 }
+  for (const r of rows) counts[r.game]++
+  return counts
 }
