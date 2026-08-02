@@ -31,6 +31,40 @@ export async function fetchGraphFromDb(): Promise<GraphRow[]> {
   }))
 }
 
+export type VpipFilter = 'all' | 'yes' | 'no'
+
+export interface HandsPage {
+  hands: ParsedHand[]
+  notes: string[]
+  total: number      // all your hands, ignoring the filter
+  filtered: number   // hands matching the filter (i.e. what's paginated)
+  limit: number
+  offset: number
+}
+
+// One page of YOUR hands for the database browser. The VPIP filter is applied
+// server-side so a page is always `limit` *matching* hands — filtering after
+// paginating would give ragged pages and a wrong count.
+export async function fetchHandsPageFromDb(
+  { limit, offset, vpip }: { limit: number; offset: number; vpip: VpipFilter },
+): Promise<HandsPage> {
+  const qs = new URLSearchParams({ view: 'mine', limit: String(limit), offset: String(offset), vpip })
+  const res = await fetch(`/api/hands?${qs}`, { headers: await authHeaders() })
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
+  const data = await res.json() as {
+    hands: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string; notes: string | null }[]
+    total: number; filtered: number; limit: number; offset: number
+  }
+  return {
+    hands: data.hands.map(rowToParsedHand),
+    notes: data.hands.map(r => r.notes ?? ''),
+    total: data.total,
+    filtered: data.filtered,
+    limit: data.limit,
+    offset: data.offset,
+  }
+}
+
 // `mine` → just your hands (your-hands review / Leakbuster); otherwise the whole
 // pooled sample (population Reports + Postflop spots).
 export async function fetchHandsFromDb(mine = false): Promise<{ hands: ParsedHand[]; notes: string[] }> {

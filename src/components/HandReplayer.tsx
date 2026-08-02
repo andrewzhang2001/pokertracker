@@ -15,11 +15,15 @@ interface Props {
   topBarExtra?: ReactNode      // view-specific controls (export button, filters…)
   enableShare?: boolean        // show share buttons (default true)
   initialHandIndex?: number    // which hand to open on first render
+  // Paged callers (the database browser) pass these to hand off navigation when
+  // the user steps off either end of the current page. Absent = clamp instead.
+  onPastStart?: () => void
+  onPastEnd?: () => void
 }
 
 export default function HandReplayer({
   hands, handNotes, onUpdateNote, onBack, backLabel = '← Back', topBarExtra, enableShare = true,
-  initialHandIndex = 0,
+  initialHandIndex = 0, onPastStart, onPastEnd,
 }: Props) {
   const [handIndex, setHandIndex] = useState(initialHandIndex)
   const [stepIndex, setStepIndex] = useState(() => hands[initialHandIndex]?.initialStep ?? -1)
@@ -71,12 +75,14 @@ export default function HandReplayer({
   }
 
   const goHand = useCallback((delta: number) => {
-    setHandIndex(prev => {
-      const next = Math.max(0, Math.min(hands.length - 1, prev + delta))
-      if (next !== prev) setStepIndex(hands[next].initialStep)
-      return next
-    })
-  }, [hands])
+    const next = handIndex + delta
+    // Off an end: let a paged caller take over, otherwise stay put.
+    if (next < 0) { onPastStart?.(); return }
+    if (next > hands.length - 1) { onPastEnd?.(); return }
+    if (next === handIndex) return
+    setHandIndex(next)
+    setStepIndex(hands[next].initialStep)
+  }, [hands, handIndex, onPastStart, onPastEnd])
 
   const goStep = useCallback((delta: number) => {
     if (!hand) return
@@ -124,9 +130,9 @@ export default function HandReplayer({
           </button>
           <span className="text-gray-400">Hand</span>
           <div className="flex gap-1">
-            <button onClick={() => goHand(-1)} disabled={handIndex === 0}
+            <button onClick={() => goHand(-1)} disabled={handIndex === 0 && !onPastStart}
               className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-xs">▲</button>
-            <button onClick={() => goHand(1)} disabled={handIndex === hands.length - 1}
+            <button onClick={() => goHand(1)} disabled={handIndex === hands.length - 1 && !onPastEnd}
               className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-xs">▼</button>
           </div>
           <span className="text-white font-medium">{handIndex + 1} / {hands.length}</span>
