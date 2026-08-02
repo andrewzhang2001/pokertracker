@@ -88,12 +88,13 @@ function LeakProfile({ ev }: { ev: EvSummary }) {
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', title = 'Reports' }: {
+export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', title = 'Reports', filterBar }: {
   hands: ParsedHand[]
   onOpen: (sel: ReportSel) => void
   onBack: () => void
   subject?: Subject
   title?: string
+  filterBar?: React.ReactNode
 }) {
   // Load all solver tables once (cached) so tiles can show profile + EV/100.
   const [tables, setTables] = useState<Map<string, SolverTable>>(new Map())
@@ -163,6 +164,7 @@ export function ReportsMenu({ hands, onOpen, onBack, subject = 'population', tit
         </button>
         <h1 className="text-2xl font-bold text-white">{title}</h1>
         <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>
+        {filterBar}
         <span className="ml-auto text-xs text-gray-600">
           ratio = <span className="text-red-400">raise</span>/<span className="text-green-400">call</span>/<span className="text-blue-400">fold</span>
         </span>
