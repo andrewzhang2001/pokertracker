@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { computeHandState } from '../lib/computeHandState'
-import { createShareLink } from '../lib/shareUrl'
 import type { ParsedHand } from '../lib/types'
 import PokerTable from './PokerTable'
 import HandSummaryPanel from './HandSummaryPanel'
@@ -13,7 +12,6 @@ interface Props {
   onBack: () => void
   backLabel?: string
   topBarExtra?: ReactNode      // view-specific controls (export button, filters…)
-  enableShare?: boolean        // show share buttons (default true)
   initialHandIndex?: number    // which hand to open on first render
   // Paged callers (the database browser) pass these to hand off navigation when
   // the user steps off either end of the current page. Absent = clamp instead.
@@ -22,17 +20,12 @@ interface Props {
 }
 
 export default function HandReplayer({
-  hands, handNotes, onUpdateNote, onBack, backLabel = '← Back', topBarExtra, enableShare = true,
+  hands, handNotes, onUpdateNote, onBack, backLabel = '← Back', topBarExtra,
   initialHandIndex = 0, onPastStart, onPastEnd,
 }: Props) {
   const [handIndex, setHandIndex] = useState(initialHandIndex)
   const [stepIndex, setStepIndex] = useState(() => hands[initialHandIndex]?.initialStep ?? -1)
   const [showOpponentCards, setShowOpponentCards] = useState(true)
-  const [sharing, setSharing] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [selectedHandIndices, setSelectedHandIndices] = useState<Set<number>>(new Set())
-  const [sharingSelected, setSharingSelected] = useState(false)
-  const [copiedSelected, setCopiedSelected] = useState(false)
 
   const hand = hands[handIndex] ?? null
 
@@ -44,34 +37,6 @@ export default function HandReplayer({
   function jumpToHand(idx: number) {
     setHandIndex(idx)
     setStepIndex(hands[idx].initialStep)
-  }
-
-  function toggleSelectHand(idx: number, checked: boolean) {
-    setSelectedHandIndices(prev => {
-      const next = new Set(prev)
-      if (checked) next.add(idx); else next.delete(idx)
-      return next
-    })
-  }
-
-  function toggleSelectAll() {
-    if (selectedHandIndices.size === hands.length) setSelectedHandIndices(new Set())
-    else setSelectedHandIndices(new Set(hands.map((_, i) => i)))
-  }
-
-  async function shareSelectedHands() {
-    const sorted = [...selectedHandIndices].sort((a, b) => a - b)
-    const rawText = sorted.map(i => hands[i].rawText).join('\n\n')
-    const notes = sorted.map(i => handNotes[i] ?? '')
-    setSharingSelected(true)
-    try {
-      const url = await createShareLink(rawText, notes)
-      await navigator.clipboard.writeText(url)
-      setCopiedSelected(true)
-      setTimeout(() => setCopiedSelected(false), 2000)
-    } finally {
-      setSharingSelected(false)
-    }
   }
 
   const goHand = useCallback((delta: number) => {
@@ -100,19 +65,6 @@ export default function HandReplayer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [goStep, goHand])
-
-  async function copyShareLink() {
-    if (!hand) return
-    setSharing(true)
-    try {
-      const url = await createShareLink(hand.rawText, [handNotes[handIndex] ?? ''])
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } finally {
-      setSharing(false)
-    }
-  }
 
   const totalSteps = hand ? hand.actions.length : 0
   const currentDesc = state?.lastAction?.desc ?? '—'
@@ -151,19 +103,6 @@ export default function HandReplayer({
           >
             {showOpponentCards ? 'Cards: on' : 'Cards: off'}
           </button>
-          {enableShare && (
-            <button
-              onClick={copyShareLink}
-              disabled={sharing}
-              className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
-                copied
-                  ? 'border-green-600 text-green-400 bg-green-600/10'
-                  : 'border-blue-600 text-blue-400 bg-blue-600/10 hover:bg-blue-600/20'
-              }`}
-            >
-              {sharing ? '…' : copied ? 'Copied!' : 'Share'}
-            </button>
-          )}
         </div>
       </div>
 
@@ -173,14 +112,7 @@ export default function HandReplayer({
           hands={hands}
           handIndex={handIndex}
           handNotes={handNotes}
-          selected={selectedHandIndices}
-          onSelect={toggleSelectHand}
-          onSelectAll={toggleSelectAll}
           onClickHand={jumpToHand}
-          onShareSelected={shareSelectedHands}
-          sharingSelected={sharingSelected}
-          copiedSelected={copiedSelected}
-          enableShare={enableShare}
         />
         <div className="flex-1 min-h-0 min-w-0 px-4 py-2">
           {hand && state && (

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(.env.local)",
+      "Read(**/.env.local)",
+      "Read(/Users/andrewzhang/pokertracker/.env.local)"
+    ]
+  }
+}

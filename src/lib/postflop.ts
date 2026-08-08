@@ -1,7 +1,8 @@
 import type { ParsedHand, ParsedCard, HandAction } from './types'
-import { displayPosition } from './positionUtils'
+import { displayPosition, type TableKind } from './positionUtils'
+import { gameKind, GAMES } from './games'
 import { computeHandState } from './computeHandState'
-import { classifyFlop, classifyBoard, type HandClass } from './ploEval'
+import { classifyFlop, classifyBoard, subRank, type HandClass } from './ploEval'
 
 // ---------------------------------------------------------------------------
 // Postflop scenario engine. A SCENARIO is one of YOUR decision nodes in the
@@ -17,21 +18,31 @@ const RV: Record<string, number> = { '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7'
 
 // Preflop sanity filters (keep spots comparable / on-strategy):
 const MIN_EFF_BB = 75         // effective stack (min of the two players)
-const RFI_MIN_BB = 3.0        // the open must be a real raise
 const THREEBET_MIN_POT = 0.75 // the 3-bet must be ~pot-sized (no tiny 3-bets)
+// The open-size gate reuses the per-game config (GAMES in ./games) — same source
+// of truth as the preflop reports, so PLO/NLHE sizing lives in one place.
 
 export const RANKS_DESC = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
 
-export type SuitTexture = 'mono' | 'twotone' | 'rainbow'
+// Suit texture by flush potential (what a 2-suited hole can make):
+//   flush = a suit with 3+ on board (hole 2 → made flush)
+//   dfd   = two suits with exactly 2 (two flush draws) — turn/river only
+//   fd    = one suit with exactly 2 (a flush draw)
+//   nofd  = no flush draw. On the RIVER draws can't complete, so it's only
+//           flush vs nofd (a lone 2-suit river = no flush).
+export type SuitTexture = 'nofd' | 'fd' | 'dfd' | 'flush'
 export interface FlopTexture { suits: SuitTexture; paired: boolean }
 export function flopTexture(flop: ParsedCard[]): FlopTexture {
   return { suits: boardSuits(flop), paired: boardPaired(flop) }
 }
-// Suit texture by distinct-suit count (generalizes across flop/turn/river):
-// 1 = mono, 2 = two-tone, 3+ = rainbow.
 export function boardSuits(board: ParsedCard[]): SuitTexture {
-  const n = new Set(board.map(c => c.suit)).size
-  return n === 1 ? 'mono' : n === 2 ? 'twotone' : 'rainbow'
+  const cnt: Record<string, number> = {}
+  for (const c of board) cnt[c.suit] = (cnt[c.suit] || 0) + 1
+  const counts = Object.values(cnt)
+  if (counts.some(n => n >= 3)) return 'flush'
+  if (board.length >= 5) return 'nofd'                       // river: flush vs no flush only
+  const twos = counts.filter(n => n === 2).length
+  return twos >= 2 ? 'dfd' : twos === 1 ? 'fd' : 'nofd'
 }
 // A board is "paired" if any rank repeats among its cards.
 export const boardPaired = (board: ParsedCard[]): boolean => new Set(board.map(c => c.rank)).size < board.length
@@ -57,11 +68,16 @@ export const straightPossibleFlop = straightPossibleBoard
 
 export type FlopActor = 'oop' | 'ip'
 export type FlopActType = 'check' | 'bet' | 'call' | 'raise' | 'fold'
-export interface FlopAction { actor: FlopActor; type: FlopActType; betPct?: number }
+// betPct = the action's size as % of pot (bets: bet/pot; raises: raise increment
+// over the pot after the call — a sizing metric for bucketing). mdf = the minimum
+// defense frequency this bet/raise imposes on the player facing it, potBefore /
+// (potBefore + R) where R is the total chips committed by the action. The two are
+// NOT interconvertible for raises, so mdf is stored, not derived.
+export interface FlopAction { actor: FlopActor; type: FlopActType; betPct?: number; mdf?: number }
 
 export interface FlopSpot {
   handId: string
-  hand: ParsedHand
+  hand?: ParsedHand          // omitted on rehydrated (materialized) spots; drill-down fetches by handId
   potType: 'SRP' | '3BP'
   oopPos: string
   ipPos: string
@@ -113,9 +129,14 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
   if (potType === 'SRP' && vol[0]?.type !== 'raise') return null
   if (potType === '3BP' && (vol[0]?.type !== 'raise' || vol[1]?.type !== 'raise')) return null
 
-  // raise-size sanity: real open, and (3BP) a ~pot-sized 3-bet
+  // raise-size sanity: real open, and (3BP) a ~pot-sized 3-bet. Blind-vs-blind
+  // opens (SB opener — incl. HU, where the button normalizes to SB) run smaller,
+  // so blind openers use the looser floor from the per-game sizing config.
   const openTo = vol[0].amount ?? 0
-  if (openTo / hand.bigBlind < RFI_MIN_BB) return null
+  const openerPlayer = hand.players.find(p => p.seatNumber === vol[0].seatNumber)
+  const openerIsSB = !!openerPlayer && displayPosition(openerPlayer.position, n) === 'SB'
+  const sizing = GAMES[gameKind(hand.gameType)].sizing
+  if (openTo / hand.bigBlind < (openerIsSB ? sizing.blindOpen : sizing.open)) return null
   if (potType === '3BP') {
     const tb = vol[1]
     const potBefore3bet = computeHandState(hand, hand.actions.indexOf(tb) - 1).pot
@@ -156,6 +177,7 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
       else if (AGGRO.includes(a.type)) { type = betSeen ? 'raise' : 'bet'; betSeen = true }
       if (!type) continue
       let betPct: number | undefined
+      let mdf: number | undefined
       if (type === 'bet' || type === 'raise') {
         const R = a.amount ?? 0                    // total "to" amount
         const potBefore = computeHandState(hand, hand.actions.indexOf(a) - 1).pot
@@ -168,9 +190,12 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
           const potAfterCall = potBefore + toCall
           betPct = potAfterCall > 0 ? (R - toCall) / potAfterCall : 0
         }
+        // MDF the defender faces. potBefore already includes the bet being raised,
+        // so R = total "to" amount is the aggressor's full risk in both cases.
+        mdf = potBefore + R > 0 ? potBefore / (potBefore + R) : undefined
         lastAggroAmt = R
       }
-      out.push({ actor, type, betPct })
+      out.push({ actor, type, betPct, mdf })
     }
     return out
   }
@@ -185,9 +210,10 @@ export function extractFlopSpot(hand: ParsedHand): FlopSpot | null {
 
   const oopCards = cardsOf(oopSeat), ipCards = cardsOf(ipSeat)
   const ok = flop.length === 3
-  const flopKlass = (c: ParsedCard[] | null) => (c && ok ? classifyFlop(c, flop) : undefined)
-  const turnKlass = (c: ParsedCard[] | null) => (c && ok && turnCard ? classifyBoard(c, [...flop, turnCard]) : undefined)
-  const riverKlass = (c: ParsedCard[] | null) => (c && ok && turnCard && riverCard ? classifyBoard(c, [...flop, turnCard, riverCard]) : undefined)
+  const game = gameKind(hand.gameType)
+  const flopKlass = (c: ParsedCard[] | null) => (c && ok ? classifyFlop(c, flop, game) : undefined)
+  const turnKlass = (c: ParsedCard[] | null) => (c && ok && turnCard ? classifyBoard(c, [...flop, turnCard], game) : undefined)
+  const riverKlass = (c: ParsedCard[] | null) => (c && ok && turnCard && riverCard ? classifyBoard(c, [...flop, turnCard, riverCard], game) : undefined)
   const turnBoard = turnCard ? [...flop, turnCard] : null
   const riverBoard = turnCard && riverCard ? [...flop, turnCard, riverCard] : null
   return {
@@ -230,6 +256,7 @@ export interface NodeDef {
 export interface Formation {
   id: string
   label: string
+  kind: TableKind         // 'sixmax' (6-max/full ring) or 'hu' (heads-up)
   potType: 'SRP' | '3BP'
   oopRoles: string[]      // positions the OOP (first-to-act) seat may hold
   ipRoles: string[]       // positions the IP seat may hold
@@ -241,12 +268,16 @@ const OPENERS = ['LJ', 'HJ', 'CO']        // RFI raiser positions (OOP vs an IP 
 const IP_CALLERS = ['HJ', 'CO', 'BU']     // in-position caller / 3-bettor positions
 
 export const FORMATIONS: Formation[] = [
-  { id: 'srp-bb-vs-ip', label: 'SRP BB vs IP', potType: 'SRP', oopRoles: ['BB'], ipRoles: IP_RFI, pfa: 'ip' },
-  { id: 'srp-coldcall', label: 'SRP Cold Call', potType: 'SRP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'oop' },
-  { id: 'srp-bvb', label: 'SRP Blind vs Blind', potType: 'SRP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'oop' },
-  { id: '3bp-oop', label: '3BP OOP vs RFI', potType: '3BP', oopRoles: ['SB', 'BB'], ipRoles: IP_RFI, pfa: 'oop' },
-  { id: '3bp-ip', label: '3BP IP vs RFI', potType: '3BP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'ip' },
-  { id: '3bp-bvb', label: '3BP Blind vs Blind', potType: '3BP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'ip' },
+  { id: 'srp-bb-vs-ip', label: 'SRP BB vs IP', kind: 'sixmax', potType: 'SRP', oopRoles: ['BB'], ipRoles: IP_RFI, pfa: 'ip' },
+  { id: 'srp-coldcall', label: 'SRP Cold Call', kind: 'sixmax', potType: 'SRP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'oop' },
+  { id: 'srp-bvb', label: 'SRP Blind vs Blind', kind: 'sixmax', potType: 'SRP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'oop' },
+  { id: '3bp-oop', label: '3BP OOP vs RFI', kind: 'sixmax', potType: '3BP', oopRoles: ['SB', 'BB'], ipRoles: IP_RFI, pfa: 'oop' },
+  { id: '3bp-ip', label: '3BP IP vs RFI', kind: 'sixmax', potType: '3BP', oopRoles: OPENERS, ipRoles: IP_CALLERS, pfa: 'ip' },
+  { id: '3bp-bvb', label: '3BP Blind vs Blind', kind: 'sixmax', potType: '3BP', oopRoles: ['SB'], ipRoles: ['BB'], pfa: 'ip' },
+  // Heads-up: SB is the button (acts first preflop), so postflop BB is OOP / SB IP.
+  // SRP → SB raised (aggressor is IP); 3BP → BB 3-bet (aggressor is OOP).
+  { id: 'hu-srp', label: 'HU SRP (SB vs BB)', kind: 'hu', potType: 'SRP', oopRoles: ['BB'], ipRoles: ['SB'], pfa: 'ip' },
+  { id: 'hu-3bp', label: 'HU 3BP (SB vs BB)', kind: 'hu', potType: '3BP', oopRoles: ['BB'], ipRoles: ['SB'], pfa: 'oop' },
 ]
 
 // Canonical names for a decision node, depending on who the preflop aggressor is.
@@ -409,24 +440,53 @@ export const getNode = (id: string) => NODE_BY_ID.get(id)
 const otherSeat = (a: FlopActor): FlopActor => (a === 'oop' ? 'ip' : 'oop')
 
 // ---- node breakdown ----
+// Bet-size buckets by % of pot for the aggressive actions, so the detail bars can
+// shade a bet/raise by sizing: [ <40%, 40–70%, >70% ]. Keyed by action ('bet'/'raise').
+export type SizeBuckets = Record<string, [number, number, number]>
+const sizeBucket = (pct: number) => (pct < 0.4 ? 0 : pct <= 0.7 ? 1 : 2)
+function addSize(sizes: SizeBuckets, action: string, betPct: number | undefined) {
+  if ((action === 'bet' || action === 'raise') && betPct !== undefined) {
+    const arr = sizes[action] ?? [0, 0, 0]
+    arr[sizeBucket(betPct)]++
+    sizes[action] = arr
+  }
+}
+
 export interface ClassRow {
   key: string
   counts: Record<string, number>
+  sizes: SizeBuckets
   total: number
-  sub: { label: string; counts: Record<string, number>; total: number }[]
+  sub: { label: string; counts: Record<string, number>; sizes: SizeBuckets; total: number }[]
 }
+// MDF vs actual defense, per faced-bet-size bucket [ <40%, 40–70%, >70% ] plus an
+// all-sizes roll-up. n = spots facing a bet in that bucket; sumMdf = Σ per-spot
+// required MDF (mean = sumMdf/n); defends = call+raise, folds = fold. The over/
+// underfold signal is (defends/n) − (sumMdf/n): negative ⇒ overfolding.
+export interface MdfCell { n: number; sumMdf: number; defends: number; folds: number }
+export interface MdfSummary { buckets: [MdfCell, MdfCell, MdfCell]; all: MdfCell }
+// One reaching hand at a node, with the acting player's cards/class + their action
+// — the per-hand table rows (center list + side-by-side compare panel).
+export interface NodeSpotRow { spot: FlopSpot; action: FlopActType; betPct?: number; cards: ParsedCard[] | null; klass?: HandClass }
 export interface NodeResult {
   label: string
   acting: FlopActor
   total: number
   actionCounts: Record<string, number>  // outcome distribution over ALL reaching spots
   rows: ClassRow[]                        // hand-class breakdown (classified spots only)
-  hands: ParsedHand[]
+  handIds: string[]                       // reaching hands (for drill-down — fetched by id)
+  mdf?: MdfSummary                        // present only when this node faces a bet/raise
+  list?: NodeSpotRow[]                    // per-hand rows (only when built withList)
 }
 
+// Strongest → weakest. Interleaves the PLO ladder (overpair/top/middle/bottom/
+// pocket pair) and the Hold'em ladder (overpair/top/underpair/2nd/3rd/weak pair,
+// then A-hi/K-hi) — each game only ever emits its own set, so the cross-game
+// ordering is cosmetic; both games' internal orders are preserved.
 const CLASS_ORDER = [
   'straight flush', 'quads', 'full house', 'flush', 'straight', 'set', 'trips', 'two pair',
-  'overpair', 'top pair', 'middle pair', 'bottom pair', 'pocket pair', 'draw', 'air',
+  'overpair', 'top pair', 'underpair', '2nd pair', 'middle pair', '3rd pair', 'bottom pair',
+  'weak pair', 'pocket pair', 'A-hi', 'K-hi', 'draw', 'air',
 ]
 const sum = (c: Record<string, number>) => Object.values(c).reduce((a, b) => a + b, 0)
 
@@ -441,10 +501,27 @@ const streamOf = (s: FlopSpot, node: NodeDef) =>
 const inStreetPath = (node: NodeDef) =>
   node.street === 'flop' ? node.path : node.street === 'turn' ? (node.turnPath ?? []) : (node.riverPath ?? [])
 const decisionIndex = (node: NodeDef) => inStreetPath(node).length
-const classOf = (s: FlopSpot, node: NodeDef) =>
-  node.street === 'flop' ? (node.acting === 'oop' ? s.oopClass : s.ipClass)
-    : node.street === 'turn' ? (node.acting === 'oop' ? s.oopTurnClass : s.ipTurnClass)
-    : (node.acting === 'oop' ? s.oopRiverClass : s.ipRiverClass)
+// A given actor's hand class at the node's street.
+const classFor = (s: FlopSpot, node: NodeDef, actor: FlopActor) =>
+  node.street === 'flop' ? (actor === 'oop' ? s.oopClass : s.ipClass)
+    : node.street === 'turn' ? (actor === 'oop' ? s.oopTurnClass : s.ipTurnClass)
+    : (actor === 'oop' ? s.oopRiverClass : s.ipRiverClass)
+const classOf = (s: FlopSpot, node: NodeDef) => classFor(s, node, node.acting)
+
+// Bet the hero faces = the action right before their decision.
+export type BetBucket = 'all' | 'sm' | 'md' | 'lg'
+const sizeBucketOf = (p?: number): BetBucket | null => (p === undefined ? null : p < 0.4 ? 'sm' : p <= 0.7 ? 'md' : 'lg')
+const facedBetPct = (s: FlopSpot, node: NodeDef): number | undefined => {
+  const di = decisionIndex(node)
+  const a = di > 0 ? streamOf(s, node)[di - 1] : undefined
+  return a && (a.type === 'bet' || a.type === 'raise') ? a.betPct : undefined
+}
+// The MDF imposed by the bet/raise the acting player faces at this node.
+const facedMdf = (s: FlopSpot, node: NodeDef): number | undefined => {
+  const di = decisionIndex(node)
+  const a = di > 0 ? streamOf(s, node)[di - 1] : undefined
+  return a && (a.type === 'bet' || a.type === 'raise') ? a.mdf : undefined
+}
 
 // Does a spot reach this node, with the right player on the clock?
 function reaches(s: FlopSpot, node: NodeDef): boolean {
@@ -463,32 +540,63 @@ function reaches(s: FlopSpot, node: NodeDef): boolean {
     pathMatches(s.riverActions, rp) && s.riverActions[rp.length]?.actor === node.acting
 }
 
-function nodeBreakdown(spots: FlopSpot[], node: NodeDef): NodeResult {
+function nodeBreakdown(spots: FlopSpot[], node: NodeDef, withList = false): NodeResult {
   const reaching = spots.filter(s => reaches(s, node))
   const di = decisionIndex(node)
-  const getOutcome = (s: FlopSpot) => streamOf(s, node)[di].type
 
+  type Agg = { counts: Record<string, number>; sizes: SizeBuckets }
+  const newAgg = (): Agg => ({ counts: {}, sizes: {} })
   const actionCounts: Record<string, number> = {}
-  const top = new Map<string, { counts: Record<string, number>; subs: Map<string, Record<string, number>> }>()
+  const top = new Map<string, Agg & { subs: Map<string, Agg> }>()
+
+  // MDF vs actual defense — only meaningful when this node's decision faces a bet.
+  const facesBet = nodeFacesBet(node)
+  const newCell = (): MdfCell => ({ n: 0, sumMdf: 0, defends: 0, folds: 0 })
+  const mdfSum: MdfSummary = { buckets: [newCell(), newCell(), newCell()], all: newCell() }
+
   for (const s of reaching) {
-    const oc = getOutcome(s)
+    const act = streamOf(s, node)[di]
+    const oc = act.type
     actionCounts[oc] = (actionCounts[oc] || 0) + 1
+    if (facesBet) {
+      const m = facedMdf(s, node)
+      if (m !== undefined) {
+        const cells = [mdfSum.buckets[sizeBucket(facedBetPct(s, node) ?? 0)], mdfSum.all]
+        for (const c of cells) {
+          c.n++; c.sumMdf += m
+          if (oc === 'fold') c.folds++; else if (oc === 'call' || oc === 'raise') c.defends++
+        }
+      }
+    }
     const hc = classOf(s, node)
     if (!hc) continue
     const key = hc.made ?? (hc.draws.length ? 'draw' : 'air')
-    const t = top.get(key) ?? { counts: {} as Record<string, number>, subs: new Map<string, Record<string, number>>() }
+    const t = top.get(key) ?? { ...newAgg(), subs: new Map<string, Agg>() }
     t.counts[oc] = (t.counts[oc] || 0) + 1
-    const su = t.subs.get(hc.label) ?? ({} as Record<string, number>)
-    su[oc] = (su[oc] || 0) + 1
-    t.subs.set(hc.label, su)
+    addSize(t.sizes, oc, act.betPct)
+    const su = t.subs.get(hc.sub) ?? newAgg()
+    su.counts[oc] = (su.counts[oc] || 0) + 1
+    addSize(su.sizes, oc, act.betPct)
+    t.subs.set(hc.sub, su)
     top.set(key, t)
   }
   const rows = CLASS_ORDER.filter(k => top.has(k)).map(k => {
     const t = top.get(k)!
-    const sub = [...t.subs.entries()].map(([label, counts]) => ({ label, counts, total: sum(counts) })).sort((a, b) => b.total - a.total)
-    return { key: k, counts: t.counts, total: sum(t.counts), sub }
+    const sub = [...t.subs.entries()].map(([label, v]) => ({ label, counts: v.counts, sizes: v.sizes, total: sum(v.counts) })).sort((a, b) => subRank(a.label) - subRank(b.label))
+    return { key: k, counts: t.counts, sizes: t.sizes, total: sum(t.counts), sub }
   })
-  return { label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows, hands: reaching.map(s => s.hand) }
+  const list = withList
+    ? reaching.map(s => ({
+        spot: s, action: streamOf(s, node)[di].type, betPct: streamOf(s, node)[di].betPct,
+        cards: cardsOf(s, node.acting), klass: classOf(s, node),
+      }))
+    : undefined
+  return {
+    label: node.label, acting: node.acting, total: reaching.length, actionCounts, rows,
+    handIds: reaching.map(s => s.handId),
+    mdf: facesBet && mdfSum.all.n > 0 ? mdfSum : undefined,
+    list,
+  }
 }
 
 export type YesNoAny = 'any' | 'yes' | 'no'
@@ -523,7 +631,7 @@ export const EMPTY_FILTER: PostflopFilter = {
 // Filter ⇆ URL query (so board filters survive drill-down / back / refresh).
 export function parseFilter(q: URLSearchParams): PostflopFilter {
   const yn = (v: string | null): YesNoAny => (v === 'yes' || v === 'no' ? v : 'any')
-  const su = (v: string | null): SuitFilter => (['rainbow', 'twotone', 'mono'] as const).includes(v as SuitTexture) ? (v as SuitTexture) : 'any'
+  const su = (v: string | null): SuitFilter => (['nofd', 'fd', 'dfd', 'flush'] as const).includes(v as SuitTexture) ? (v as SuitTexture) : 'any'
   const ranks = (v: string | null) => (v ? v.split(',').filter(r => RANKS_DESC.includes(r)) : [])
   return {
     suits: su(q.get('suits')), paired: yn(q.get('paired')), straight: yn(q.get('straight')),
@@ -557,7 +665,9 @@ export function extractSpots(hands: ParsedHand[]): FlopSpot[] {
 // (cond === undefined) an active yes/no filter excludes the spot.
 const matchYN = (v: YesNoAny, cond: boolean | undefined) =>
   v === 'any' || (cond !== undefined && cond === (v === 'yes'))
-const matchSuit = (v: SuitFilter, t: SuitTexture | undefined) => v === 'any' || t === v
+// `fd` is the superset of flush-draw boards, so it also matches double-flush-draw.
+const matchSuit = (v: SuitFilter, t: SuitTexture | undefined) =>
+  v === 'any' || t === v || (v === 'fd' && t === 'dfd')
 const matchRank = (sel: string[], rank: string | undefined) =>
   sel.length === 0 || (rank !== undefined && sel.includes(rank))
 
@@ -614,21 +724,58 @@ function deriveNodes(node: NodeDef): { heroNode: NodeDef; prior?: NodeDef; respo
   return { heroNode: node, prior, responses }
 }
 
+// The RANGE the hero faces: the opponent's hand-class composition over the spots
+// reaching the node, strongest→weakest (only classified/showdown hands).
+export interface RangeComp { rows: { key: string; count: number }[]; total: number; handIds: string[] }
+function rangeComposition(spots: FlopSpot[], node: NodeDef, actor: FlopActor): RangeComp {
+  const counts = new Map<string, number>()
+  const handIds: string[] = []
+  let total = 0
+  for (const s of spots) {
+    if (!reaches(s, node)) continue
+    handIds.push(s.handId)
+    const hc = classFor(s, node, actor)
+    if (!hc) continue
+    const key = hc.made ?? (hc.draws.length ? 'draw' : 'air')
+    counts.set(key, (counts.get(key) || 0) + 1); total++
+  }
+  return { rows: CLASS_ORDER.filter(k => counts.has(k)).map(k => ({ key: k, count: counts.get(k)! })), total, handIds }
+}
+
+// Does this node's decision face a bet/raise (vs a check / being first to act)?
+export function nodeFacesBet(node: NodeDef): boolean {
+  const sp = inStreetPath(node)
+  const last = sp[sp.length - 1]
+  return !!last && (last.type === 'bet' || last.type === 'raise')
+}
+
 export interface ScenarioReport {
   heroNode: NodeResult
   prior?: NodeResult
   responses: NodeResult[]
-  // hands reaching your node, with YOUR cards/class
-  listSpots: { spot: FlopSpot; action: FlopActType; betPct?: number; cards: ParsedCard[] | null; klass?: HandClass }[]
+  facedRange?: RangeComp   // the villain range you're facing (composition), when facing an action
+  listSpots: NodeSpotRow[] // hands reaching your node, with YOUR cards/class
 }
 
 export function formationReport(
   spots: FlopSpot[], formationId: string, nodeId: string, mode: PostflopMode, filter: PostflopFilter,
+  facedBet: BetBucket = 'all', madeBet: BetBucket = 'all',
 ): ScenarioReport {
   const formation = FORMATIONS.find(f => f.id === formationId) ?? FORMATIONS[0]
   const node = NODE_BY_ID.get(nodeId) ?? NODES[0]
-  const base = filterFormation(spots, formation, filter)
+  let base = filterFormation(spots, formation, filter)
   const { heroNode, prior, responses } = deriveNodes(node)
+  // Bet-size filter: keep only hands where the bet you face is that size, so the
+  // preceding/decision/response panels all narrow to that size together.
+  if (facedBet !== 'all') base = base.filter(s => reaches(s, node) && sizeBucketOf(facedBetPct(s, node)) === facedBet)
+  // Made-bet filter (nodes where the acting player bets, i.e. first-to-act / vs a
+  // check): keep only spots where THEIR bet at this node was that size, so you can
+  // read the betting-range construction one size at a time.
+  if (madeBet !== 'all') base = base.filter(s => {
+    if (!reaches(s, node)) return false
+    const act = streamOf(s, node)[decisionIndex(node)]
+    return act?.type === 'bet' && sizeBucketOf(act.betPct) === madeBet
+  })
 
   // Per-DECISION subject: in 'hero' mode the acting player is you; in
   // 'population' mode it's anyone but you (so we keep opponents' decisions even
@@ -638,16 +785,16 @@ export function formationReport(
   const villSeat = otherSeat(node.acting)
   const villainSpots = base.filter(s => !actingIsMe(s, villSeat))
 
-  const di = decisionIndex(node)
-  const listSpots = heroSpots
-    .filter(s => reaches(s, node))
-    .map(s => ({ spot: s, action: streamOf(s, node)[di].type, betPct: streamOf(s, node)[di].betPct, cards: cardsOf(s, node.acting), klass: classOf(s, node) }))
-
+  // withList: every panel carries its per-hand rows so the UI can pop a
+  // side-by-side compare table for any of them (hero / prior / responses).
+  const heroResult = nodeBreakdown(heroSpots, heroNode, true)
   return {
-    heroNode: nodeBreakdown(heroSpots, heroNode),
-    prior: prior ? nodeBreakdown(villainSpots, prior) : undefined,
-    responses: responses.map(r => nodeBreakdown(villainSpots, r)),
-    listSpots,
+    heroNode: heroResult,
+    prior: prior ? nodeBreakdown(villainSpots, prior, true) : undefined,
+    responses: responses.map(r => nodeBreakdown(villainSpots, r, true)),
+    // The range you face = the opponent's cards over the spots reaching your node.
+    facedRange: prior ? rangeComposition(base, node, villSeat) : undefined,
+    listSpots: heroResult.list ?? [],
   }
 }
 

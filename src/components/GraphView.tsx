@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { computeGraphFromRows, type GraphRow, type GraphStats } from '../lib/graph'
-import { fetchGraphFromDb } from '../lib/handsApi'
+import { fetchGraphFromDb, fetchStakes, type StakeInfo } from '../lib/handsApi'
+import { StakePicker } from './StakePicker'
 
 interface Props {
   onBack: () => void
@@ -56,17 +57,33 @@ function Chart({ points }: { points: { i: number; cum: number; cumAdj: number }[
   )
 }
 
+type GameFilter = 'all' | 'plo' | 'nlhe'
+
 export default function GraphView({ onBack }: Props) {
   const [rows, setRows] = useState<GraphRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [game, setGame] = useState<GameFilter>('all')
+  const [stake, setStake] = useState('')
+  const [stakes, setStakes] = useState<StakeInfo[]>([])
+
+  // The stakes YOU'VE played (for the active game), populating the picker. A
+  // stake that no longer matches the game filter falls back to "all stakes".
+  useEffect(() => {
+    let cancelled = false
+    fetchStakes('mine', game === 'all' ? undefined : game)
+      .then(s => { if (!cancelled) setStakes(s) })
+      .catch(() => { if (!cancelled) setStakes([]) })
+    return () => { cancelled = true }
+  }, [game])
 
   useEffect(() => {
     let cancelled = false
-    fetchGraphFromDb()
+    setRows(null); setError(null)
+    fetchGraphFromDb(game === 'all' ? undefined : game, stake || undefined)
       .then(r => { if (!cancelled) setRows(r) })
       .catch(e => { if (!cancelled) setError(String((e as Error).message ?? e)) })
     return () => { cancelled = true }
-  }, [])
+  }, [game, stake])
 
   const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows) : null), [rows])
 
@@ -75,6 +92,15 @@ export default function GraphView({ onBack }: Props) {
       <div className="flex items-center gap-3">
         <button onClick={onBack} className="text-xs text-gray-500 hover:text-white border border-gray-700 rounded px-2 py-1 transition-colors">← Home</button>
         <h1 className="text-2xl font-bold text-white">Graph</h1>
+        <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
+          {(['all', 'plo', 'nlhe'] as GameFilter[]).map(gk => (
+            <button key={gk} onClick={() => setGame(gk)}
+              className={`px-3 py-1 transition-colors ${game === gk ? 'bg-yellow-500/20 text-yellow-300' : 'text-gray-400 hover:text-white'}`}>
+              {gk === 'all' ? 'All' : gk === 'plo' ? 'PLO' : 'NLHE'}
+            </button>
+          ))}
+        </div>
+        <StakePicker stakes={stakes} value={stake} onChange={setStake} />
         {g && <span className="text-gray-600 text-xs">{g.hands} hands · BB won/lost over time</span>}
       </div>
 
@@ -87,7 +113,7 @@ export default function GraphView({ onBack }: Props) {
             <Stat label="BB / 100" value={fmt(g.bbPer100, 2)} color={tone(g.bbPer100)} sub="actual winrate" />
             <Stat label="All-in adj BB / 100" value={fmt(g.adjBbPer100, 2)} color={tone(g.adjBbPer100)} sub="all-ins by equity" />
             <Stat label="Total BB" value={fmt(g.totalNetBB, 1)} color={tone(g.totalNetBB)} sub="won / lost" />
-            <Stat label="Rake paid" value={`−${g.totalRakeBB.toFixed(1)}`} color="text-orange-300" sub="BB attributed" />
+            <Stat label="Rake / 100" value={`−${g.rakeBbPer100.toFixed(2)}`} color="text-orange-300" sub={`−${g.totalRakeBB.toFixed(1)} BB total`} />
           </div>
 
           <div className="rounded-xl border border-gray-800 bg-black/20 p-4">

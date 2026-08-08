@@ -8,6 +8,7 @@ import { analyzeHand } from '../analyzeHand'
 import { dedupeAndSort } from '../mergeHands'
 import { rfiSpots, rfiReport, vsRfiSpots, vsRfiReport, vs3betSpots, vs3betReport, limpVsIsoSpots, limpVsIsoReport, buildReport, leakProfile } from '../reports'
 import { ploCombo } from '../ploCombo'
+import { holdemCombo } from '../holdemCombo'
 import { flopTexture, straightPossibleFlop, straightPossibleBoard, boardPaired, boardSuits, extractFlopSpot, extractSpots, formationReport, EMPTY_FILTER } from '../postflop'
 import { classifyFlop, classifyBoard } from '../ploEval'
 import { showdownEquities } from '../equity'
@@ -579,9 +580,15 @@ describe('RFI reports (population, by position)', () => {
     expect(vs3betSpots(h).length).toBe(0)
   })
 
-  test('vs3betSpots: a sub-10bb 3-bet is excluded', () => {
-    const h = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 8], ['fold', 5], ['fold', 6], ['fold', 1]])
-    expect(vs3betSpots(h).length).toBe(0)
+  test('vs3betSpots: a sub-6bb 3-bet is excluded; ≥6bb counts with its size', () => {
+    // PLO now captures 3-bets ≥6bb (the loosest size bucket); the report filter
+    // slices from there. A 5bb 3-bet is still below the floor.
+    const small = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 5], ['fold', 5], ['fold', 6], ['fold', 1]])
+    expect(vs3betSpots(small).length).toBe(0)
+    const mid = mk6([['raise', 1, 3.5], ['fold', 2], ['fold', 3], ['raise', 4, 8], ['fold', 5], ['fold', 6], ['fold', 1]])
+    const spots = vs3betSpots(mid)
+    expect(spots.length).toBe(1)
+    expect(spots[0].threeBetBB).toBe(8)
   })
 
   test('vs3betReport requires BOTH opener & 3-bettor 75bb+', () => {
@@ -648,6 +655,15 @@ describe('ploCombo – dealt hand → solver combo key', () => {
     expect(ploCombo(C('Js Ts 9h 8h'))).toBe('[JT][98]') // double-suited JT / 98
     expect(ploCombo(C('As Ah Ad Ac'))).toBe('AAAA')      // rainbow quads
     expect(ploCombo(C('Ah 4h 3h 2h'))).toBe('[A432]')    // monotone
+  })
+
+  test('holdemCombo – 169-hand keys', () => {
+    expect(holdemCombo(C('As Ah'))).toBe('AA')       // pair
+    expect(holdemCombo(C('As Ks'))).toBe('AKs')      // suited
+    expect(holdemCombo(C('As Kh'))).toBe('AKo')      // offsuit
+    expect(holdemCombo(C('7s 2d'))).toBe('72o')
+    expect(holdemCombo(C('2d 7s'))).toBe('72o')      // order-independent
+    expect(holdemCombo(C('Kh Ah'))).toBe('AKs')      // high rank first
   })
 
   test('every parsed PLO hole hand maps to a real solver combo (BU table)', () => {
@@ -735,6 +751,54 @@ describe('ploEval – flop hand classification', () => {
     expect(made('8h 8c 4d 2s', 'Kc 9s 5h')).toBe('pocket pair') // underpair
   })
 
+  test('paired/tripped board texture is shared — not counted toward the category', () => {
+    // J33: the board 33 is everyone's, so don't inflate to "two pair" —
+    expect(made('Jh Ah Td 9s', 'Jc 3d 3s')).toBe('top pair')    // JAT9 → top pair
+    expect(made('9h 9c 4d 2s', 'Jc 3d 3s')).toBe('pocket pair') // 99xx → pocket pair
+    expect(made('Ah Ac 4d 2s', 'Jc 3d 3s')).toBe('overpair')    // AA   → overpair
+    expect(made('Ah Ac 4d 5s', 'Qc 9d 9s')).toBe('overpair')    // AA45 on Q99 → overpair
+    // pocket pair can't also use the board pair (only 2 hole cards in PLO)
+    expect(made('Kh Kc 6d 5s', '6c 2d 2h')).toBe('overpair')    // KK65 on 622 → overpair
+    expect(made('Ah Ac 7d 7s', 'Tc Td 2h')).toBe('overpair')    // AA77 on TT2 → overpair
+    // a genuine two pair (player pairs both ranks) still counts (turn board J733)
+    expect(classifyBoard(C('Jh 7c 4d 2s'), C('Js 7h 3c 3d')).made).toBe('two pair')
+    // board trips are shared too: A-J on J666 → top pair, not board trips
+    expect(classifyBoard(C('Ah Jc 4d 2s'), C('Jh 6c 6d 6s')).made).toBe('top pair')
+    // but a real full house on the trips board is kept
+    expect(classifyBoard(C('9h 9c 4d 2s'), C('Jh 6c 6d 6s')).made).toBe('full house')
+    // trips made WITH a hole card on a paired board stays trips (K on KK5)
+    expect(made('Kh 4c 7d 8s', 'Ks Kd 5h')).toBe('trips')
+  })
+
+  test('subcategories (nut tiers + draw tag)', () => {
+    const sub = (hole: string, board: string) => classifyBoard(C(hole), C(board)).sub
+    const tier = (hole: string, board: string) => sub(hole, board).split(' · ')[0] // ignore any draw tag
+    // flush tiers (board = 3 hearts, A not on board so nut = A)
+    expect(tier('Ah Kh 4d 2s', 'Qh 9h 3h')).toBe('nut flush')
+    expect(tier('Kh Jh 4d 2s', 'Qh 9h 3h')).toBe('second nut flush')
+    expect(tier('Jh Th 4d 2s', 'Qh 9h 3h')).toBe('other flush')
+    // sets
+    expect(tier('Kh Ks 2d 3s', 'Kd 9c 4h')).toBe('top set')
+    expect(tier('9h 9s 2d 3s', 'Kd 9c 4h')).toBe('middle set')
+    expect(tier('4d 4s 2c 3s', 'Kd 9c 4h')).toBe('bottom set')
+    // trips: nut = best kicker given the board (A shared on A66)
+    expect(tier('Ah 6h 4d 2s', '6c 6d Js')).toBe('nut trips')
+    expect(tier('Kh 6h 4d 2s', 'Ac 6d 6s')).toBe('nut trips')
+    expect(tier('Qh 6h 4d 2s', 'Ac 6d 6s')).toBe('non-nut trips')
+    // two pair tiers on AQ65
+    expect(tier('Ah Qc 4d 2s', 'As Qd 6c 5h')).toBe('top two pair')
+    expect(tier('Ah 6d 4d 2s', 'As Qd 6c 5h')).toBe('two pair w/ TP')
+    expect(tier('6d 5s 4d 2s', 'As Qd 6c 5h')).toBe('other two pair')
+    // combined made + draw
+    expect(sub('Kh Ks 2h 3d', 'Kd 9h 4h')).toBe('top set · flush draw')
+    // pure draw bucket
+    expect(sub('Ah Th 4d 2s', 'Kh 9h 3c')).toBe('nut flush draw')
+    expect(sub('Qh Th 4d 2s', 'Kh 9h 3c')).toBe('other flush draw')
+    expect(sub('Jc Tc 7s 6d', '9h 8d 2c')).toBe('wrap')
+    expect(sub('Jh Tc 4d 6s', '9h 8d 2c')).toBe('OESD')
+    expect(sub('Qh Jc 4s 6d', 'Kh 9d 2c')).toBe('gutshot')
+  })
+
   test('draws + combos', () => {
     expect(cls('Ah 2h 5c 7d', 'Kh 9h 3c')).toMatchObject({ made: null, draws: ['flush draw'] })
     expect(cls('Jh Tc 4d 6s', '9h 8d 2c').draws).toContain('OESD')
@@ -779,6 +843,32 @@ describe('ploEval – flop hand classification', () => {
     // flush DRAW still pending after the turn (2 hole + 2 board suited)
     expect(cb('Ah 2h 5c 7d', 'Kh 9h 3c Qs').draws).toContain('flush draw')
   })
+
+  test('classifyBoard – Hold\'em pair ladder (game=nlhe)', () => {
+    const nl = (hole: string, board: string) => classifyBoard(C(hole), C(board), 'nlhe').made
+    const plo = (hole: string, board: string) => classifyBoard(C(hole), C(board)).made // default 'plo'
+    // unpaired flop K Q 7 → levels K (top) / Q (2nd) / 7 (3rd)
+    expect(nl('Ah Ad', 'Ks Qd 7c')).toBe('overpair')    // above top
+    expect(nl('Ah Kd', 'Ks Qd 7c')).toBe('top pair')
+    expect(nl('Ah Qc', 'Ks Qd 7c')).toBe('2nd pair')
+    expect(nl('Ah 7d', 'Ks Qd 7c')).toBe('3rd pair')
+    expect(nl('Jh Jd', 'Ks Qd 7c')).toBe('3rd pair')    // PP between 2nd and 3rd
+    expect(nl('6h 6d', 'Ks Qd 7c')).toBe('weak pair')   // PP below 3rd
+    expect(nl('Ah 2c', 'Ks Qd 7c')).toBe('A-hi')        // no pair / no draw, holds A
+    expect(nl('Kh 2c', 'Qs 8d 3c')).toBe('K-hi')        // no pair / no draw, holds K (no A)
+    // paired board J 8 8 6 → the 8 is shared (hold it = trips); levels J / 6
+    expect(nl('Th Td', 'Js 8d 8c 6h')).toBe('underpair') // TT between J and 6
+    expect(nl('7h 7d', 'Js 8d 8c 6h')).toBe('underpair') // 77 too (the user's example)
+    expect(nl('5h 5d', 'Js 8d 8c 6h')).toBe('weak pair') // below the 6
+    expect(nl('Ah 6d', 'Js 8d 8c 6h')).toBe('2nd pair')  // pairs the 6
+    expect(nl('8h Tc', 'Js 8d 8c 6h')).toBe('trips')     // holds an 8
+    expect(nl('Jh 6c', 'Js 8d 8c 6h')).toBe('two pair')  // genuine two pair (J and 6)
+    expect(nl('Ah 2c', 'Js 8d 8c 6h')).toBe('A-hi')      // only the shared board pair → A-hi
+    // best-5-of-7 still plays the board for real hands (flush with one hole card)
+    expect(nl('Ah 2c', 'Kh Qh 7h 3h')).toBe('flush')
+    // PLO default unchanged by the game param
+    expect(plo('Ah 2h 5c 7d', 'Kh 9h 3c Qh')).toBe('flush')
+  })
 })
 
 describe('postflop – BB vs flop c-bet spot', () => {
@@ -809,9 +899,9 @@ describe('postflop – BB vs flop c-bet spot', () => {
   }
 
   test('flopTexture & connectivity', () => {
-    expect(flopTexture(C('As Ks Qs'))).toEqual({ suits: 'mono', paired: false })
-    expect(flopTexture(C('Ah Kh 2d'))).toEqual({ suits: 'twotone', paired: false })
-    expect(flopTexture(C('As Ad Kc'))).toEqual({ suits: 'rainbow', paired: true })
+    expect(flopTexture(C('As Ks Qs'))).toEqual({ suits: 'flush', paired: false }) // 3 suited → flush
+    expect(flopTexture(C('Ah Kh 2d'))).toEqual({ suits: 'fd', paired: false })    // 2 suited → flush draw
+    expect(flopTexture(C('As Ad Kc'))).toEqual({ suits: 'nofd', paired: true })   // no 2-suit → no fd
     expect(straightPossibleFlop(C('6s 5h 4d'))).toBe(true)   // 654
     expect(straightPossibleFlop(C('Ts 9h 8d'))).toBe(true)   // T98
     expect(straightPossibleFlop(C('Qs 6h 3d'))).toBe(false)  // Q63 — span 9, no straight
@@ -833,11 +923,15 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(boardPaired(C('Ah Kd 2c'))).toBe(false)
     expect(boardPaired(C('Ah Kd 2c Ks'))).toBe(true)              // turn pairs the K
     expect(boardPaired(C('Ah Kd 2c 7s 9h'))).toBe(false)
-    // suit texture by distinct-suit count, scaling with the board
-    expect(boardSuits(C('As Ks Qs'))).toBe('mono')
-    expect(boardSuits(C('As Ks Qs 2s'))).toBe('mono')
-    expect(boardSuits(C('As Ks Qs 2h'))).toBe('twotone')
-    expect(boardSuits(C('As Kh Qd'))).toBe('rainbow')
+    // suit texture by flush potential, scaling with the board
+    expect(boardSuits(C('As Ks Qs'))).toBe('flush')          // flop: 3 suited
+    expect(boardSuits(C('As Ks Qs 2s'))).toBe('flush')       // turn: 4 suited
+    expect(boardSuits(C('As Ks Qs 2h'))).toBe('flush')       // turn: 3 suited → still a flush
+    expect(boardSuits(C('As Kh Qd'))).toBe('nofd')           // flop: rainbow
+    expect(boardSuits(C('Ah Kh 2s 3s'))).toBe('dfd')         // turn: two 2-suits → double flush draw
+    expect(boardSuits(C('Ah Kh 2s 3d'))).toBe('fd')          // turn: one 2-suit → flush draw
+    expect(boardSuits(C('As Ks 2h 3d 4c'))).toBe('nofd')     // river: lone 2-suit = no flush
+    expect(boardSuits(C('As Ks Qs 2h 3d'))).toBe('flush')    // river: 3 suited = flush
   })
 
 
@@ -870,8 +964,8 @@ describe('postflop – BB vs flop c-bet spot', () => {
     expect(r.prior!.total).toBe(3)              // all three checked to the IP raiser
     expect(r.responses[0].total).toBe(1)        // only xr reaches "vs your check-raise"
     expect(r.listSpots.length).toBe(2)
-    // texture filter (rainbow board) excludes monotone
-    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { ...EMPTY_FILTER, suits: 'mono' }).heroNode.total).toBe(0)
+    // texture filter (no-flush-draw board) excludes a flush-board filter
+    expect(formationReport(extractSpots([faced]), 'srp-bb-vs-ip', 'flop-xb', 'hero', { ...EMPTY_FILTER, suits: 'flush' }).heroNode.total).toBe(0)
   })
 
   test('formationReport: 3BP OOP first-to-act with villain response nodes', () => {

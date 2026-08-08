@@ -34,6 +34,10 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
   const hero = hand.players.find(p => p.isMe)
   const stat = handStat(hand)
   const { rawText, ...parsedNoRaw } = hand
+  // Drop the transient per-seat raw identities before persisting — the shared
+  // `parsed` blob (served to population views) must stay anonymous. Seat→profile
+  // mapping is kept separately in the owner-scoped profile tables.
+  const parsed = { ...parsedNoRaw, players: parsedNoRaw.players.map(({ sourceName, ...p }) => p) }
   return {
     id: hand.handId,
     site: hand.site,
@@ -50,13 +54,15 @@ export function canonicalizeHand(hand: ParsedHand, notes?: string): HandRow {
     pot_type: analysis.potType,
     hero_vpip: analysis.heroVpip,
     analysis,
-    parsed: parsedNoRaw,
+    parsed,
     raw_text: rawText,
     notes: notes?.trim() ? notes.trim() : null,
   }
 }
 
-// Reconstruct a ParsedHand from a stored row (parsed JSONB + raw_text column).
-export function rowToParsedHand(row: { parsed: Omit<ParsedHand, 'rawText'>; raw_text: string }): ParsedHand {
-  return { ...row.parsed, rawText: row.raw_text }
+// Reconstruct a ParsedHand from a stored row (parsed JSONB [+ raw_text]). The
+// list queries omit raw_text to save egress — nothing in the UI reads it (it
+// stays in the DB as the backfill source of truth), so rawText falls back to ''.
+export function rowToParsedHand(row: { parsed: Omit<ParsedHand, 'rawText'>; raw_text?: string }): ParsedHand {
+  return { ...row.parsed, rawText: row.raw_text ?? '' }
 }
