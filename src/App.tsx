@@ -151,6 +151,9 @@ export default function App() {
   const [reportError, setReportError] = useState<string | null>(null)
   // preflop report grid (one GROUP BY) — drives every report/leakbuster tile
   const [reportGrid, setReportGrid] = useState<ReportGridRow[]>([])
+  // Which filter combination reportGrid currently holds, so re-entering Reports
+  // doesn't refetch a grid we already have. null = nothing loaded yet.
+  const [gridLoadedKey, setGridLoadedKey] = useState<string | null>(null)
   // 6-max vs heads-up — top-level filter for reports/leakbuster/postflop
   const [kind, setKind] = useState<TableKind>('sixmax')
   // PLO vs NLHE — a second dimension. NLHE reports render a 13×13 frequency grid.
@@ -223,16 +226,19 @@ export default function App() {
     setDbPage(0)
   }
 
-  // Reports/Leakbuster menu — the compact preflop grid (no hand pool fetched).
-  // Kept fresh in the background so entering Reports/Leakbuster is instant; the
-  // grid is small and serves both views (population + your-hands columns).
-  async function loadReportGrid(range: DateRange, stake: string) {
+  // Reports/Leakbuster — the per-combo preflop grid (no hand pool fetched). It
+  // serves the tiles, the report detail and the NLHE hand grid, so it carries a
+  // row per (report, combo, action) and is tens of thousands of rows: fetched
+  // on demand rather than prefetched, and cached by filter combination.
+  async function loadReportGrid(range: DateRange, stake: string, key: string) {
     setReportStatus('loading')
     setReportError(null)
     try {
       setReportGrid(await fetchReportGrid(range, stake || undefined))
+      setGridLoadedKey(key)
       setReportStatus('idle')
     } catch (e) {
+      setGridLoadedKey(null)   // let a retry re-fetch
       setReportError(String((e as Error).message ?? e))
       setReportStatus('error')
     }
@@ -248,10 +254,17 @@ export default function App() {
   // Leaving the report drill-down whenever the route changes.
   useEffect(() => { setDrill(null) }, [path])
 
-  // (Re)fetch the report grid on mount and whenever the month range changes —
-  // prefetched from any view so opening Reports/Leakbuster is instant.
-  useEffect(() => { loadReportGrid(monthRange(monthFrom, monthTo), stakeFilter) // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monthFrom, monthTo, stakeFilter])
+  // Fetch the grid only for the views that read it, and only once per filter
+  // combination. It was previously fetched on mount from every view, which paid
+  // for a multi-megabyte response on the landing page and on every filter
+  // change regardless of whether a report was open.
+  const needsGrid = view === 'reports' || view === 'leakbuster'
+  const gridKey = `${monthFrom}:${monthTo}:${stakeFilter}`
+  useEffect(() => {
+    if (!needsGrid || gridLoadedKey === gridKey) return
+    loadReportGrid(monthRange(monthFrom, monthTo), stakeFilter, gridKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsGrid, gridKey, gridLoadedKey])
 
   // The stakes present in the pool (for the active game) → the stake picker.
   useEffect(() => {
@@ -533,8 +546,13 @@ export default function App() {
         />
       )
     }
-    if (reportStatus === 'loading') return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
     if (reportStatus === 'error') return <CenteredMessage title="Couldn't load reports" detail={reportError ?? ''} onBack={() => navigate('/')} />
+    // Also wait when the grid is merely stale: the fetch is kicked off by an
+    // effect, so the first render after entering has last filter's grid (or
+    // none) and would otherwise flash empty tiles.
+    if (reportStatus === 'loading' || gridLoadedKey !== gridKey) {
+      return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
+    }
     if (reportSel === null) {
       return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} stakes={stakes} stake={stakeFilter} onStake={setStakeFilter} openSize={openSize} threebetSize={threebetSize} onOpenSize={setOpenSize} onThreebetSize={setThreebetSize} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
