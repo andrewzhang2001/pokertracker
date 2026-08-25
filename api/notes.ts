@@ -1,10 +1,11 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
+import { ensureNotesSchema } from '../db/schema'
 
 // Persistent study notes, one per (user, anchor). The anchor is a semantic key
 // for a page — a postflop node, a report, a leakbuster spot — built filter-blind
 // so a note follows the spot across every board/size/date filter (see
-// src/lib/noteAnchor.ts). Notes are personal: keyed by the Clerk account, never
+// src/shared/api/noteAnchor.ts). Notes are personal: keyed by the Clerk account, never
 // pooled. Same Node runtime / auth shape as api/hands.ts.
 export const config = { runtime: 'nodejs' }
 
@@ -26,18 +27,6 @@ async function userIdFrom(req: Request): Promise<string | null> {
   }
 }
 
-async function ensureTable() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS notes (
-      user_id    text NOT NULL,
-      anchor     text NOT NULL,
-      body       text NOT NULL,
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, anchor)
-    )
-  `
-}
-
 async function handler(req: Request): Promise<Response> {
   if (!connectionString) {
     return Response.json({ error: 'Database not configured' }, { status: 500 })
@@ -47,7 +36,7 @@ async function handler(req: Request): Promise<Response> {
   if (!userId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    await ensureTable()
+    await ensureNotesSchema(sql)
 
     if (req.method === 'GET') {
       const params = new URL(req.url).searchParams

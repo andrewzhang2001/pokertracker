@@ -8,10 +8,13 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "backfill-preflop": "esbuild scripts/backfill-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-preflop.mjs && node node_modules/.cache/bf-preflop.mjs",
-    "backfill-postflop": "esbuild scripts/backfill-flop-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-flop.mjs && node node_modules/.cache/bf-flop.mjs",
-    "backfill-net": "esbuild scripts/backfill-hand-net.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-net.mjs && node node_modules/.cache/bf-net.mjs",
-    "backfill-reparse": "esbuild scripts/backfill-reparse.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-reparse.mjs && node node_modules/.cache/bf-reparse.mjs"
+    "data:solver": "node src/reports/pipeline/build-solver.mjs",
+    "backfill-preflop": "esbuild src/reports/pipeline/backfill-preflop-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-preflop.mjs && node node_modules/.cache/bf-preflop.mjs",
+    "backfill-postflop": "esbuild src/postflop/pipeline/backfill-flop-spots.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-flop.mjs && node node_modules/.cache/bf-flop.mjs",
+    "backfill-net": "esbuild src/profiles/pipeline/backfill-hand-net.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-net.mjs && node node_modules/.cache/bf-net.mjs",
+    "backfill-reparse": "esbuild db/backfill/hands-reparse.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-reparse.mjs && node node_modules/.cache/bf-reparse.mjs",
+    "backfill-recompute": "esbuild db/backfill/hands-recompute.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-recompute.mjs && node node_modules/.cache/bf-recompute.mjs",
+    "backfill-owner": "esbuild db/backfill/hands-owner.ts --bundle --platform=node --format=esm --external:@neondatabase/serverless --outfile=node_modules/.cache/bf-owner.mjs && node node_modules/.cache/bf-owner.mjs"
   },
   "dependencies": {
     "@clerk/backend": "^3.8.4",

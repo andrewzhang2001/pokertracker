@@ -1,5 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
+import { ensureProfilesSchema } from '../db/schema'
 
 // Node.js runtime (Fluid Compute) — @clerk/backend needs Node crypto. See
 // api/hands.ts for why the handler is exported via the `fetch` Web Standard shape.
@@ -25,43 +26,7 @@ async function userIdFrom(req: Request): Promise<string | null> {
 // Per-account player profiles: a private roster of the real people you play
 // against on PokerNow, so a person's hands unify across tables even though the
 // site's "name @ token" identity changes room to room. Everything here is scoped
-// to owner_id; the seat→profile links live only here, never in the shared
-// `hands.parsed` blob, so the population pool stays anonymous.
-//
-// There is deliberately no alias table: identities aren't auto-matched. You map
-// each seat at import (an unassigned one becomes an anonymous profile named by
-// its raw identity), and unify a person's different-token identities with merge.
-async function ensureTable() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS profiles (
-      id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      owner_id   text NOT NULL,
-      name       text NOT NULL,
-      is_hero    boolean NOT NULL DEFAULT false,
-      anonymous  boolean NOT NULL DEFAULT false,
-      created_at timestamptz DEFAULT now()
-    )
-  `
-  await sql`CREATE INDEX IF NOT EXISTS profiles_owner ON profiles (owner_id)`
-
-  // One row per (hand, seat) → the profile that sat there. Stamped at import;
-  // powers per-person analysis ("how do I run vs Alan Zhu") by joining to the
-  // hand's structured actions at that seat.
-  await sql`
-    CREATE TABLE IF NOT EXISTS hand_players (
-      owner_id   text NOT NULL,
-      hand_id    text NOT NULL,
-      seat       int  NOT NULL,
-      profile_id bigint NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
-      is_hero    boolean NOT NULL DEFAULT false,
-      PRIMARY KEY (owner_id, hand_id, seat)
-    )
-  `
-  await sql`CREATE INDEX IF NOT EXISTS hand_players_profile ON hand_players (profile_id)`
-  // This seat's own net (bb) for the hand — zero-sum across the table, so a
-  // profile's summed net is that person's actual result (not hero-centric).
-  await sql`ALTER TABLE hand_players ADD COLUMN IF NOT EXISTS net_bb numeric`
-}
+// to owner_id. See db/schema/profiles.ts + db/schema/hand-players.ts for the tables.
 
 // Guarantee a self profile exists so there's always an unambiguous "you" to map
 // your seat to — created lazily, named "Hero", never duplicated (only if the
@@ -90,7 +55,7 @@ async function handler(req: Request): Promise<Response> {
   if (!ownerId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    await ensureTable()
+    await ensureProfilesSchema(sql)
     await ensureHero(ownerId)
 
     if (req.method === 'GET') {

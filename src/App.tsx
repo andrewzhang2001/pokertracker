@@ -1,28 +1,31 @@
 import { useState, useEffect, useMemo } from 'react'
-import { UserButton } from '@clerk/clerk-react'
-import { parseHandHistories, diagnose } from './lib/parseHandHistory'
+import { parseHandHistories, diagnose } from './shared/poker/parsers'
 // fetchHandsPageFromDb / VpipFilter drive the paginated database browser, which
 // is separate from the aggregated report grid below.
-import { exportHandsToDb, fetchHandsPageFromDb, fetchReportGrid, fetchReportHands, fetchStakes, type DateRange, type StakeInfo, type VpipFilter } from './lib/handsApi'
-import { monthRange } from './components/MonthRange'
-import { dedupeAndSort } from './lib/mergeHands'
-import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, SIZE_OPTIONS, DEFAULT_SIZE, type SizeAxis, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './lib/reports'
-import type { TableKind } from './lib/positionUtils'
-import type { GameKind } from './lib/games'
-import { loadSolver, solverUrl } from './lib/solver'
-import type { ParsedHand } from './lib/types'
-import HandReplayer from './components/HandReplayer'
-import ReportsView, { ReportsMenu } from './components/ReportsView'
-import { reportAnchor } from './lib/noteAnchor'
-import HandGrid from './components/HandGrid'
-import PostflopView from './components/PostflopView'
-import PostflopMenu from './components/PostflopMenu'
-import GraphView from './components/GraphView'
-import ProfilesView from './components/ProfilesView'
-import ProfileDetailView from './components/ProfileDetailView'
-import SolverCompareView from './components/SolverCompareView'
-import MapPlayersModal, { collectIdentities, type Assignment } from './components/MapPlayersModal'
-import { commitMapping } from './lib/profilesApi'
+import { exportHandsToDb, fetchHandsPageFromDb, fetchReportGrid, fetchReportHands, fetchStakes, type DateRange, type StakeInfo, type VpipFilter } from './shared/api/handsApi'
+import { monthRange } from './shared/ui/MonthRange'
+import { dedupeAndSort } from './shared/poker/mergeHands'
+import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, SIZE_OPTIONS, DEFAULT_SIZE, type SizeAxis, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './shared/poker/reports'
+import type { TableKind } from './shared/poker/positionUtils'
+import type { GameKind } from './shared/poker/games'
+import { loadSolver, solverUrl } from './reports/solver'
+import type { ParsedHand } from './shared/poker/types'
+import HandReplayer from './shared/replayer/HandReplayer'
+import CenteredMessage from './shared/ui/CenteredMessage'
+import LandingView from './landing/LandingView'
+import DatabaseView from './database/DatabaseView'
+import ImportView from './import/ImportView'
+import ReportsView, { ReportsMenu } from './reports/ReportsView'
+import { reportAnchor } from './shared/api/noteAnchor'
+import HandGrid from './reports/HandGrid'
+import PostflopView from './postflop/PostflopView'
+import PostflopMenu from './postflop/PostflopMenu'
+import GraphView from './graph/GraphView'
+import ProfilesView from './profiles/ProfilesView'
+import ProfileDetailView from './profiles/ProfileDetailView'
+import SolverCompareView from './solver-compare/SolverCompareView'
+import { collectIdentities, type Assignment } from './import/MapPlayersModal'
+import { commitMapping } from './shared/api/profilesApi'
 
 type View = 'landing' | 'import' | 'database' | 'reports' | 'leakbuster' | 'postflop' | 'graph' | 'profiles' | 'solver-compare'
 
@@ -394,132 +397,30 @@ export default function App() {
 
   // ---- Landing ----
   if (view === 'landing') {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-8">
-        <div className="absolute top-3 right-3"><UserButton afterSignOutUrl="/" /></div>
-        <h1 className="text-4xl font-bold text-white">Poker Hand Tracker</h1>
-        {(() => {
-          const Card = ({ to, icon, title, desc, onClick }: { to?: string; icon: string; title: string; desc: string; onClick?: () => void }) => (
-            <button
-              onClick={onClick ?? (() => navigate(to!))}
-              className="w-64 h-44 rounded-xl border border-gray-700 bg-gray-900 hover:border-yellow-500 hover:bg-gray-800 transition-colors flex flex-col items-center justify-center gap-3 text-center px-6"
-            >
-              <span className="text-3xl">{icon}</span>
-              <span className="text-lg font-semibold text-white">{title}</span>
-              <span className="text-xs text-gray-500">{desc}</span>
-            </button>
-          )
-          return (
-            <div className="flex flex-col gap-6">
-              <div className="flex flex-col sm:flex-row gap-6">
-                <Card icon="📥" title="Import" desc="Paste a hand history to review, then export to your database" onClick={() => { setError(null); navigate('/import') }} />
-                <Card to="/database" icon="🗄️" title="View Database" desc="Browse and filter your saved hands" />
-                <Card to="/graph" icon="📈" title="Graph" desc="BB won/lost, winrate, all-in adjusted &amp; rake" />
-              </div>
-              <div className="flex flex-col sm:flex-row gap-6">
-                <Card to="/reports" icon="📊" title="Reports" desc="Population tendencies — RFI by position, and more" />
-                <Card to="/leakbuster" icon="🛠️" title="Leakbuster" desc="Your own EV leaks vs GTO — same reports, your hands" />
-                <Card to="/postflop" icon="🃏" title="Postflop" desc="Spot browser — formations, lines &amp; sizing" />
-              </div>
-              <div className="flex flex-col sm:flex-row gap-6">
-                <Card to="/profiles" icon="👤" title="PokerNow Profiles" desc="Your private roster — data on the people you play" />
-                <Card to="/solver-compare" icon="🎯" title="Range vs Solver" desc="POC — your HU SB RFI frequency vs GTO" />
-              </div>
-            </div>
-          )
-        })()}
-      </div>
-    )
+    return <LandingView onNavigate={navigate} onImport={() => { setError(null); navigate('/import') }} />
   }
 
   // ---- Database ----
   if (view === 'database') {
-    // Only block the whole screen on the first load; later page/filter fetches
-    // keep the current page on screen and show a spinner in the top bar.
-    if (dbStatus === 'loading' && dbLoadedKey === null) {
-      return <CenteredMessage title="Loading hands…" onBack={() => navigate('/')} />
-    }
-    if (dbStatus === 'error') {
-      return <CenteredMessage title="Couldn't load hands" detail={dbError ?? ''} onBack={() => navigate('/')} />
-    }
-    if (!dbCounts.total) {
-      return <CenteredMessage title="No hands saved yet" detail="Import some hands and export them to your database." onBack={() => navigate('/')} />
-    }
-
-    const loading = dbStatus === 'loading'
-    const firstShown = dbPage * DB_PAGE_SIZE + 1
-    const lastShown = dbPage * DB_PAGE_SIZE + dbHands.length
-
-    const filterBar = (
-      <div className="flex items-center gap-3">
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          VPIP
-          <select
-            value={vpipFilter}
-            onChange={e => changeVpipFilter(e.target.value as VpipFilter)}
-            className="bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:border-yellow-500"
-          >
-            <option value="all">All</option>
-            <option value="yes">VPIP only</option>
-            <option value="no">No VPIP</option>
-          </select>
-          {/* matching / total — only differs when a filter is on */}
-          <span className="text-gray-600">
-            {dbCounts.filtered}{vpipFilter !== 'all' ? `/${dbCounts.total}` : ''}
-          </span>
-        </label>
-        {dbCounts.filtered > 0 && (
-          <div className="flex items-center gap-1.5 text-xs text-gray-400">
-            <button
-              onClick={() => goToDbPage(dbPage - 1, 'first')}
-              disabled={dbPage === 0 || loading}
-              title="Newer hands"
-              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30"
-            >‹</button>
-            <span className="tabular-nums">
-              {loading ? '…' : `${firstShown}–${lastShown}`} of {dbCounts.filtered}
-            </span>
-            <button
-              onClick={() => goToDbPage(dbPage + 1, 'first')}
-              disabled={dbPage >= dbPageCount - 1 || loading}
-              title="Older hands"
-              className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30"
-            >›</button>
-            <span className="text-gray-600">pg {dbPage + 1}/{dbPageCount}</span>
-          </div>
-        )}
-      </div>
-    )
-
-    if (!dbCounts.filtered) {
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
-          <h1 className="text-2xl font-bold text-white">No hands match this filter</h1>
-          <div>{filterBar}</div>
-          <button onClick={() => changeVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
-          <button onClick={() => navigate('/')} className="text-xs text-gray-500 hover:text-white">← Home</button>
-        </div>
-      )
-    }
-
     return (
-      <HandReplayer
-        // Remount per loaded page so the hand cursor resets to the right edge.
-        key={`db-${dbLoadedKey}`}
+      <DatabaseView
+        status={dbStatus}
+        error={dbError}
+        loadedKey={dbLoadedKey}
         hands={dbHands}
-        handNotes={dbNotes}
-        initialHandIndex={dbLandOn === 'last' ? Math.max(0, dbHands.length - 1) : 0}
+        notes={dbNotes}
+        counts={dbCounts}
+        page={dbPage}
+        pageCount={dbPageCount}
+        pageSize={DB_PAGE_SIZE}
+        landOn={dbLandOn}
+        vpipFilter={vpipFilter}
+        onVpipFilter={changeVpipFilter}
+        onGoToPage={goToDbPage}
         onUpdateNote={(idx, value) => {
           setDbNotes(prev => { const n = [...prev]; n[idx] = value; return n })
         }}
-        // ↑/↓ off either end of the page continues into the adjacent one. Gated
-        // on `loading` like the pager buttons: the page cursor has already moved
-        // while a fetch is in flight, so a held key would otherwise skip pages.
-        onPastStart={dbPage > 0 && !loading ? () => goToDbPage(dbPage - 1, 'last') : undefined}
-        onPastEnd={dbPage < dbPageCount - 1 && !loading ? () => goToDbPage(dbPage + 1, 'first') : undefined}
-        onBack={() => navigate('/')}
-        backLabel="← Home"
-        topBarExtra={filterBar}
+        onNavigate={navigate}
       />
     )
   }
@@ -684,128 +585,32 @@ export default function App() {
   }
 
   // ---- Import ----
-  if (!importHands.length) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
-        <h1 className="text-3xl font-bold text-white">Import hands</h1>
-        <p className="text-gray-400">Upload or paste an Ignition hand history (.txt) or PokerNow log (.csv) — format is auto-detected</p>
-
-        <label className="w-full max-w-2xl cursor-pointer">
-          <input
-            type="file"
-            accept=".txt,.csv,text/plain,text/csv"
-            multiple
-            className="hidden"
-            onChange={e => { loadFiles(e.target.files); e.target.value = '' }}
-          />
-          <div className="border-2 border-dashed border-gray-700 hover:border-yellow-500 rounded-lg p-6 text-center text-sm text-gray-400 hover:text-yellow-400 transition-colors">
-            📄 Choose file(s) — Ignition .txt or PokerNow .csv, you can select multiple
-          </div>
-        </label>
-
-        <div className="text-xs text-gray-600">— or paste below —</div>
-
-        <textarea
-          className="w-full max-w-2xl h-48 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-200 focus:outline-none focus:border-yellow-500 resize-none font-mono"
-          placeholder="Paste hand history here..."
-          value={pasteText}
-          onChange={e => setPasteText(e.target.value)}
-        />
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-        <div className="flex gap-3">
-          <button
-            onClick={() => navigate('/')}
-            className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
-          >
-            ← Home
-          </button>
-          <button
-            onClick={() => loadText(pasteText)}
-            disabled={!pasteText.trim()}
-            className="px-6 py-2 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed text-black font-semibold rounded-lg transition-colors"
-          >
-            Load hands
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  const assignBtn = mapData.identities.length > 0 && (
-    <button
-      onClick={openAssign}
-      disabled={exportState === 'busy'}
-      className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-        assignments ? 'border-green-600 text-green-400 bg-green-600/10' : 'border-gray-600 text-gray-300 hover:text-white'
-      }`}
-      title="Map PokerNow players to profiles before exporting"
-    >
-      {assignments ? '✓ Players assigned' : `Assign players (${mapData.identities.length})`}
-    </button>
-  )
-
-  // PokerNow imports must have their players assigned before export is allowed.
-  const needsAssign = mapData.identities.length > 0 && !assignments
-  const exportBtn = (
-    <button
-      onClick={startExport}
-      disabled={exportState === 'busy' || needsAssign}
-      title={needsAssign ? 'Assign players to profiles first' : exportState === 'error' ? exportMsg : undefined}
-      className={`text-xs px-3 py-1 rounded-full border transition-colors disabled:opacity-60 ${
-        exportState === 'done'
-          ? 'border-green-600 text-green-400 bg-green-600/10'
-          : exportState === 'error'
-          ? 'border-red-600 text-red-400 bg-red-600/10'
-          : 'border-yellow-600 text-yellow-400 bg-yellow-600/10 hover:bg-yellow-600/20'
-      }`}
-    >
-      {exportState === 'busy' ? (exportMsg || 'Saving…')
-        : exportState === 'done' ? exportMsg
-        : exportState === 'error' ? (exportMsg || 'Export failed')
-        : needsAssign ? `Assign players first`
-        : `Export ${importHands.length} → Database`}
-    </button>
-  )
-
   return (
-    <>
-      <HandReplayer
-        key={`import-${importHands.length}`}
-        hands={importHands}
-        handNotes={importNotes}
-        onUpdateNote={(idx, value) => setImportNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
-        onBack={resetImport}
-        backLabel="← Home"
-        topBarExtra={<>{assignBtn}{exportBtn}</>}
-      />
-      {mapOpen && (
-        <MapPlayersModal
-          identities={mapData.identities}
-          initial={assignments ?? undefined}
-          confirmLabel={mapMode === 'export' ? 'Save & export' : 'Save assignments'}
-          onCancel={() => setMapOpen(false)}
-          onConfirm={a => {
-            setAssignments(a)
-            setMapOpen(false)
-            if (mapMode === 'export') runExport(a)
-          }}
-        />
-      )}
-    </>
-  )
-}
-
-function CenteredMessage({ title, detail, onBack }: { title: string; detail?: string; onBack: () => void }) {
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
-      <h1 className="text-2xl font-bold text-white">{title}</h1>
-      {detail && <p className="text-gray-400 text-sm max-w-md text-center">{detail}</p>}
-      <button
-        onClick={onBack}
-        className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors"
-      >
-        ← Home
-      </button>
-    </div>
+    <ImportView
+      hands={importHands}
+      notes={importNotes}
+      pasteText={pasteText}
+      onPasteText={setPasteText}
+      error={error}
+      exportState={exportState}
+      exportMsg={exportMsg}
+      identities={mapData.identities}
+      assignments={assignments}
+      mapOpen={mapOpen}
+      mapMode={mapMode}
+      onLoadFiles={loadFiles}
+      onLoadText={loadText}
+      onReset={resetImport}
+      onOpenAssign={openAssign}
+      onStartExport={startExport}
+      onCancelMap={() => setMapOpen(false)}
+      onConfirmMap={a => {
+        setAssignments(a)
+        setMapOpen(false)
+        if (mapMode === 'export') runExport(a)
+      }}
+      onUpdateNote={(idx, value) => setImportNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
+      onNavigate={navigate}
+    />
   )
 }

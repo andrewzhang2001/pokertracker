@@ -1,5 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
+import { ensureHandsSchema } from '../db/schema'
 
 // Node.js runtime (Fluid Compute), not Edge: @clerk/backend pulls in Node crypto
 // the Edge runtime doesn't support. On Node, the Web Request/Response handler
@@ -39,115 +40,6 @@ async function userIdFrom(req: Request): Promise<string | null> {
   }
 }
 
-async function ensureTable() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS hands (
-      id            text PRIMARY KEY,
-      site          text NOT NULL,
-      game_type     text NOT NULL,
-      table_size    int  NOT NULL,
-      small_blind   numeric,
-      big_blind     numeric NOT NULL,
-      currency      text,
-      played_at     bigint,
-      hero_position text,
-      net_bb        numeric,
-      pot_type      text,
-      analysis      jsonb NOT NULL,
-      parsed        jsonb NOT NULL,
-      raw_text      text NOT NULL,
-      notes         text,
-      created_at    timestamptz DEFAULT now()
-    )
-  `
-  // Result columns added later; backfilled on next export of each hand.
-  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS adj_net_bb numeric`
-  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS rake_bb numeric`
-  // Per-account ownership. Legacy rows stay NULL until backfilled
-  // (scripts/backfill-owner.mjs) or re-exported by their owner.
-  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS owner_id text`
-  // analysis.heroVpip promoted to a real column: the database view filters on
-  // it while paginating, which can't be done client-side any more.
-  await sql`ALTER TABLE hands ADD COLUMN IF NOT EXISTS hero_vpip boolean`
-  // Matches the keyset order used by every listing query below, so paging deep
-  // into a large account stays an index scan instead of a full sort.
-  await sql`
-    CREATE INDEX IF NOT EXISTS hands_owner_order_idx
-    ON hands (owner_id, played_at DESC NULLS LAST, created_at DESC)
-  `
-  // Empties itself once backfillHeroVpip has run, which is what makes calling
-  // that on every request cheap (the planner finds no candidate rows).
-  await sql`
-    CREATE INDEX IF NOT EXISTS hands_hero_vpip_backfill_idx
-    ON hands (owner_id) WHERE hero_vpip IS NULL
-  `
-
-  // Materialized preflop spots — one row per extracted spot, so reports become a
-  // single GROUP BY here instead of shipping every hand to the browser. Derived
-  // from `parsed`; rebuilt on each export and by scripts/backfill-spots.mjs.
-  await sql`
-    CREATE TABLE IF NOT EXISTS preflop_spots (
-      id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-      hand_id       text NOT NULL,
-      owner_id      text,
-      report_type   text NOT NULL,
-      pos_a         text NOT NULL,
-      pos_b         text,
-      multiway      boolean,
-      combo         text,
-      action        text NOT NULL,
-      is_hero       boolean NOT NULL,
-      stack_bb      numeric NOT NULL,
-      key_stack_bb  numeric NOT NULL
-    )
-  `
-  // 'hu' vs 'sixmax' — keeps heads-up and 6-max reports on separate tracks.
-  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS table_kind text`
-  // 'plo' vs 'nlhe' — a second dimension parallel to table_kind. Backfilled rows
-  // predate this column; treat NULL as 'plo'.
-  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS game text`
-  // Faced raise size (bb) + its report-filter partition — vsrfi: the open size,
-  // vs3bet: the 3-bet size; NULL for rfi/limpiso and rows predating this column
-  // (treated as the default top bucket by the grid, so tiles don't go empty
-  // pre-backfill). Populated by canonicalSpots / scripts/backfill-spots.ts.
-  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS faced_bb numeric`
-  await sql`ALTER TABLE preflop_spots ADD COLUMN IF NOT EXISTS size_bucket text`
-  await sql`CREATE INDEX IF NOT EXISTS preflop_spots_lookup ON preflop_spots (game, table_kind, report_type, pos_a, pos_b, is_hero)`
-  await sql`CREATE INDEX IF NOT EXISTS preflop_spots_hand ON preflop_spots (hand_id)`
-
-  // Materialized postflop spots — one slim FlopSpot per heads-up hand, so the
-  // postflop views load a single formation's spots and run the node-walk
-  // client-side. Texture columns drive the per-formation counts query.
-  await sql`
-    CREATE TABLE IF NOT EXISTS flop_spots (
-      hand_id        text PRIMARY KEY,
-      owner_id       text,
-      formation_id   text NOT NULL,
-      pot_type       text NOT NULL,
-      oop_pos        text NOT NULL,
-      ip_pos         text NOT NULL,
-      oop_is_hero    boolean NOT NULL,
-      ip_is_hero     boolean NOT NULL,
-      flop_suits     text,
-      flop_paired    boolean,
-      flop_straighty boolean,
-      flop_high      text,
-      flop_mid       text,
-      flop_low       text,
-      turn_suits     text,
-      turn_paired    boolean,
-      turn_straighty boolean,
-      river_suits    text,
-      river_paired   boolean,
-      river_straighty boolean,
-      spot           jsonb NOT NULL
-    )
-  `
-  // 'plo' vs 'nlhe' — reserved for NLHE postflop (a later milestone); NULL = 'plo'.
-  await sql`ALTER TABLE flop_spots ADD COLUMN IF NOT EXISTS game text`
-  await sql`CREATE INDEX IF NOT EXISTS flop_spots_formation ON flop_spots (formation_id)`
-}
-
 // Populate hero_vpip for this account's rows that predate the column. Prefers
 // the stored analysis blob; rows exported before analyzeHand grew heroVpip
 // (see the VPIP-filter commit) have it re-derived from `parsed` with the same
@@ -178,7 +70,7 @@ async function handler(req: Request): Promise<Response> {
   if (!ownerId) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    await ensureTable()
+    await ensureHandsSchema(sql)
 
     if (req.method === 'GET') {
       const params = new URL(req.url).searchParams
