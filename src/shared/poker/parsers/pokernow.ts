@@ -1,14 +1,13 @@
-import type { ParsedCard, ParsedHand, PlayerInfo, HandAction, Street } from '../types'
+import type { ParsedCard, ParsedHand } from '../types'
+import { buildHand, type PokerNowEvent, type PokerNowHand } from './pokernowHand'
 
 // ---------------------------------------------------------------------------
-// PokerNow CSV log parser.
+// PokerNow CSV log parser (the older export; pokernowJson.ts reads the newer one).
 //
 // PokerNow exports a game as a CSV of `entry,at,order` rows — one event per row,
 // newest first. A hand is the run of events between "-- starting hand #N … --"
-// and "-- ending hand #N --". Amounts are the *total* level a player is at (a
-// call says the amount matched-to, a raise says "raises to X"), unlike the
-// additional-chips convention Ignition uses; we convert calls to the additional
-// amount so computeHandState's stack math stays correct.
+// and "-- ending hand #N --". Each hand is read into a PokerNowHand and built by
+// pokernowHand.ts.
 //
 // The log never names the hero on the "Your hand is …" line, so we identify the
 // hero across the whole session by matching those hole cards against the named
@@ -37,11 +36,6 @@ const cardKey = (cs: ParsedCard[]) => cs.map(c => c.rank + c.suit).sort().join()
 
 function parseAmt(s: string): number {
   return parseFloat(s.replace(/,/g, ''))
-}
-
-function bb(amount: number, bigBlind: number): string {
-  const v = amount / bigBlind
-  return (Number.isInteger(v) ? v : parseFloat(v.toFixed(2))) + 'bb'
 }
 
 // PokerNow game descriptions ("No Limit Texas Hold'em", "Pot Limit Omaha") don't
@@ -161,25 +155,6 @@ function detectHero(blocks: Block[]): string | null {
   return pick(votes) ?? pick(seen)
 }
 
-// ---- Positions ------------------------------------------------------------
-
-// Seat labels in the app's vocabulary (see positionUtils). Play proceeds from the
-// seat after the button: SB, BB, UTG, …. Heads-up the button *is* the SB.
-function assignPositions(seats: number[], dealerSeat: number): Map<number, string> {
-  const m = new Map<number, string>()
-  const n = seats.length
-  const bi = seats.indexOf(dealerSeat)
-  if (n === 2) {
-    m.set(dealerSeat, 'Small Blind')
-    m.set(seats[(bi + 1) % 2], 'Big Blind')
-    return m
-  }
-  const labels = ['Small Blind', 'Big Blind', 'UTG', 'UTG+1', 'UTG+2', 'UTG+3', 'UTG+4', 'UTG+5']
-  m.set(dealerSeat, 'Dealer')
-  for (let k = 1; k < n; k++) m.set(seats[(bi + k) % n], labels[k - 1] ?? `UTG+${k - 3}`)
-  return m
-}
-
 // ---- One hand -------------------------------------------------------------
 
 const STACKS = /^Player stacks: (.+)$/
@@ -187,76 +162,60 @@ const SEAT = /#(\d+) "([^"]+)" \(([\d.,]+)\)/g
 const POST = /^"([^"]+)"\s+posts a (small blind|big blind|straddle|missing small blind|missed big blind) of ([\d.,]+)/
 const ACTION = /^"([^"]+)"\s+(.+)$/
 const UNCALLED = /^Uncalled bet of ([\d.,]+) returned to "([^"]+)"/
-const FLOP = /^Flop:.*\[([^\]]+)\]/
-const TURN = /^Turn:.*\[([^\]]+)\]/
-const RIVER = /^River:.*\[([^\]]+)\]/
+const BOARD: ['flop' | 'turn' | 'river', RegExp][] = [
+  ['flop', /^Flop:.*\[([^\]]+)\]/],
+  ['turn', /^Turn:.*\[([^\]]+)\]/],
+  ['river', /^River:.*\[([^\]]+)\]/],
+]
+const BLIND_KIND: Record<string, 'small' | 'big'> = { 'small blind': 'small', 'big blind': 'big' }
 
-function parseHand(block: Block, heroName: string | null): ParsedHand | null {
+// One log entry → the normalized event it describes, or null for lines that
+// carry no action (shows, "Your hand", stacks, chat, …).
+function lineEvent(line: string, nameToSeat: Map<string, number>): PokerNowEvent | null {
+  const pm = line.match(POST)
+  if (pm) {
+    const seat = nameToSeat.get(pm[1])
+    return seat === undefined ? null : { kind: 'post', seat, amount: parseAmt(pm[3]), blind: BLIND_KIND[pm[2]] ?? 'other' }
+  }
+  for (const [street, re] of BOARD) {
+    const bm = line.match(re)
+    if (bm) return { kind: 'board', street, cards: parseCards(bm[1]), label: bm[1] }
+  }
+  const unc = line.match(UNCALLED)
+  if (unc) {
+    const seat = nameToSeat.get(unc[2])
+    return seat === undefined ? null : { kind: 'uncalled', seat, amount: parseAmt(unc[1]) }
+  }
+
+  const am = line.match(ACTION)
+  if (!am) return null
+  const seat = nameToSeat.get(am[1])
+  if (seat === undefined) return null
+  const act = am[2]
+  const allin = /\ball[\s-]?in\b/i.test(act)
+  if (/^folds/.test(act)) return { kind: 'fold', seat }
+  if (/^checks/.test(act)) return { kind: 'check', seat }
+  const callM = act.match(/^calls ([\d.,]+)/)
+  if (callM) return { kind: 'call', seat, level: parseAmt(callM[1]), allin }
+  const betM = act.match(/^bets ([\d.,]+)/)
+  if (betM) return { kind: 'bet', seat, amount: parseAmt(betM[1]), allin }
+  const raiseM = act.match(/^raises to ([\d.,]+)/)
+  if (raiseM) return { kind: 'raise', seat, total: parseAmt(raiseM[1]), allin }
+  const collM = act.match(/^collected ([\d.,]+) from pot/)
+  if (collM) return { kind: 'collect', seat, amount: parseAmt(collM[1]) }
+  return null
+}
+
+function readHand(block: Block, heroName: string | null): PokerNowHand | null {
   // Seats + starting stacks (pre-blind), from the "Player stacks:" line.
   const stacksLine = block.lines.find(l => STACKS.test(l))
   if (!stacksLine) return null
-  const nameToSeat = new Map<string, number>()
-  const seatName = new Map<number, string>()
-  const seatStack = new Map<number, number>()
-  for (const m of stacksLine.match(STACKS)![1].matchAll(SEAT)) {
-    const seat = parseInt(m[1])
-    nameToSeat.set(m[2], seat)
-    seatName.set(seat, m[2])
-    seatStack.set(seat, parseAmt(m[3]))
-  }
-  if (!nameToSeat.size) return null
-
-  const seats = [...seatStack.keys()].sort((a, b) => a - b)
-  const dealerSeat = nameToSeat.get(block.dealer)
-  const posOf = dealerSeat !== undefined ? assignPositions(seats, dealerSeat) : new Map<number, string>()
-
-  const players: PlayerInfo[] = seats.map(seat => ({
-    seatNumber: seat,
-    position: posOf.get(seat) ?? String(seat),
-    isMe: heroName !== null && nameToSeat.get(heroName) === seat,
-    startingStack: seatStack.get(seat)!,
-    sourceName: seatName.get(seat),
-  }))
+  const seats = [...stacksLine.match(STACKS)![1].matchAll(SEAT)].map(m => ({ seat: parseInt(m[1]), sourceName: m[2], stack: parseAmt(m[3]) }))
+  if (!seats.length) return null
+  const nameToSeat = new Map(seats.map(s => [s.sourceName, s.seat]))
   const heroSeat = heroName !== null ? nameToSeat.get(heroName) : undefined
 
-  // Blind/straddle posts drive the blind levels and open the preflop street.
-  let smallBlind = 0, bigBlind = 1
-  const posts: { seat: number; amount: number }[] = []
-  for (const line of block.lines) {
-    const pm = line.match(POST)
-    if (!pm) continue
-    const seat = nameToSeat.get(pm[1])
-    if (seat === undefined) continue
-    const amt = parseAmt(pm[3])
-    if (pm[2] === 'small blind') smallBlind = amt
-    else if (pm[2] === 'big blind') bigBlind = amt
-    posts.push({ seat, amount: amt })
-  }
-
-  const actions: HandAction[] = []
-  // streetBet tracks each seat's committed chips on the current street, so a
-  // "call to X" can be converted to the additional X − committed that
-  // computeHandState expects. Reset on every street.
-  const streetBet = new Map<number, number>()
-  let street: Street = 'preflop'
-  const nameOf = (seat: number) => players.find(p => p.seatNumber === seat)?.position ?? String(seat)
-
-  // 1) Blinds first, then 2) hero's hole cards — so the replayer opens with the
-  // blinds already in the pot (matching the Ignition parser), regardless of where
-  // the nameless "Your hand" line fell in the raw order.
-  for (const { seat, amount } of posts) {
-    streetBet.set(seat, (streetBet.get(seat) ?? 0) + amount)
-    actions.push({ type: 'post_blind', seatNumber: seat, amount, street: 'preflop', desc: `${nameOf(seat)} posts ${bb(amount, bigBlind)}` })
-  }
-
-  // Hole cards known up front: the hero's (from "Your hand") plus any villain who
-  // shows at showdown. Emitted at preflop so the replayer's "opponent cards"
-  // toggle can reveal a shown hand for its whole replay, not just the last street
-  // (a shown villain never folded, so this can't leak folded holdings).
   const yourHand = block.lines.map(l => l.match(YOUR_HAND)).find(Boolean)
-  if (yourHand && heroSeat !== undefined) {
-    actions.push({ type: 'deal_hole', seatNumber: heroSeat, cards: parseCards(yourHand[1]), street: 'preflop', desc: `${nameOf(heroSeat)} dealt cards` })
-  }
   const shown = new Map<number, ParsedCard[]>()
   for (const line of block.lines) {
     const sh = line.match(SHOWS)
@@ -266,92 +225,20 @@ function parseHand(block: Block, heroName: string | null): ParsedHand | null {
     const cards = parseCards(sh[2])
     if (cards.length) shown.set(seat, cards)
   }
-  for (const [seat, cards] of shown) {
-    actions.push({ type: 'deal_hole', seatNumber: seat, cards, street: 'preflop', desc: `${nameOf(seat)} shows` })
-  }
-  let initialStep = actions.length - 1
-
-  // 3) The rest of the hand, in order: board cards, bets, shows, wins.
-  for (const line of block.lines) {
-    if (POST.test(line) || YOUR_HAND.test(line) || STACKS.test(line)) continue
-
-    const flopM = line.match(FLOP)
-    if (flopM) { street = 'flop'; streetBet.clear(); actions.push({ type: 'deal_flop', cards: parseCards(flopM[1]), street, desc: `Flop [${flopM[1]}]` }); continue }
-    const turnM = line.match(TURN)
-    if (turnM) { street = 'turn'; streetBet.clear(); actions.push({ type: 'deal_turn', cards: parseCards(turnM[1]), street, desc: `Turn [${turnM[1]}]` }); continue }
-    const riverM = line.match(RIVER)
-    if (riverM) { street = 'river'; streetBet.clear(); actions.push({ type: 'deal_river', cards: parseCards(riverM[1]), street, desc: `River [${riverM[1]}]` }); continue }
-
-    const unc = line.match(UNCALLED)
-    if (unc) {
-      const seat = nameToSeat.get(unc[2])
-      if (seat !== undefined) {
-        const amt = parseAmt(unc[1])
-        streetBet.set(seat, (streetBet.get(seat) ?? 0) - amt)
-        actions.push({ type: 'return_bet', seatNumber: seat, amount: amt, street, desc: `${nameOf(seat)} uncalled bet returned` })
-      }
-      continue
-    }
-
-    const am = line.match(ACTION)
-    if (!am) continue
-    const seat = nameToSeat.get(am[1])
-    if (seat === undefined) continue
-    const act = am[2]
-    const allin = /\ball[\s-]?in\b/i.test(act)
-    const cur = streetBet.get(seat) ?? 0
-
-    if (/^folds/.test(act)) { actions.push({ type: 'fold', seatNumber: seat, street, desc: `${nameOf(seat)} folds` }); continue }
-    if (/^checks/.test(act)) { actions.push({ type: 'check', seatNumber: seat, street, desc: `${nameOf(seat)} checks` }); continue }
-
-    const callM = act.match(/^calls ([\d.,]+)/)
-    if (callM) {
-      const level = parseAmt(callM[1])          // total matched-to
-      const additional = Math.max(0, level - cur)
-      streetBet.set(seat, level)
-      actions.push({ type: allin ? 'allin' : 'call', seatNumber: seat, amount: allin ? level : additional, street, desc: `${nameOf(seat)} ${allin ? 'all-in' : 'calls'} ${bb(level, bigBlind)}` })
-      continue
-    }
-    const betM = act.match(/^bets ([\d.,]+)/)
-    if (betM) {
-      const amt = parseAmt(betM[1])
-      streetBet.set(seat, cur + amt)
-      actions.push({ type: allin ? 'allin' : 'bet', seatNumber: seat, amount: allin ? cur + amt : amt, street, desc: `${nameOf(seat)} ${allin ? 'all-in' : 'bets'} ${bb(amt, bigBlind)}` })
-      continue
-    }
-    const raiseM = act.match(/^raises to ([\d.,]+)/)
-    if (raiseM) {
-      const total = parseAmt(raiseM[1])
-      streetBet.set(seat, total)
-      actions.push({ type: allin ? 'allin' : 'raise', seatNumber: seat, amount: total, street, desc: `${nameOf(seat)} ${allin ? 'all-in' : 'raises'} ${bb(total, bigBlind)}` })
-      continue
-    }
-    if (/^shows?\b/.test(act)) continue // hole cards already emitted at preflop
-    const collM = act.match(/^collected ([\d.,]+) from pot/)
-    if (collM) {
-      const amt = parseAmt(collM[1])
-      actions.push({ type: 'result', seatNumber: seat, amount: amt, street, desc: `${nameOf(seat)} wins ${bb(amt, bigBlind)}` })
-      continue
-    }
-  }
 
   return {
-    handId: block.id,
-    tableId: '',
-    site: 'pokernow',
-    date: block.at,
-    playedAt: Number.isFinite(Date.parse(block.at)) ? Date.parse(block.at) : null,
+    id: block.id,
     gameType: block.gameType,
-    currency: 'USD',
-    players,
-    smallBlind,
-    bigBlind,
-    actions,
-    initialStep,
+    at: block.at,
+    seats,
+    dealerSeat: nameToSeat.get(block.dealer),
+    heroSeat,
+    heroCards: yourHand ? parseCards(yourHand[1]) : undefined,
+    shown,
+    events: block.lines.map(l => lineEvent(l, nameToSeat)).filter((e): e is PokerNowEvent => e !== null),
     // Faithful source slice for this hand (with a CSV header), so raw_text stays
     // a lossless, re-parseable record — the basis for clean future backfills.
     rawText: `entry,at,order\n${block.rawLines.join('\n')}`,
-    // No rake in PokerNow home games — leaving totalPot undefined yields rake 0.
   }
 }
 
@@ -363,7 +250,7 @@ export function parse(text: string): ParsedHand[] {
   const blocks = splitBlocks(parseRows(text))
   if (!blocks.length) return []
   const hero = detectHero(blocks)
-  return blocks.map(b => parseHand(b, hero)).filter((h): h is ParsedHand => h !== null)
+  return blocks.map(b => readHand(b, hero)).filter((h): h is PokerNowHand => h !== null).map(buildHand)
 }
 
 export function diagnose(text: string): string {
@@ -376,4 +263,4 @@ export function diagnose(text: string): string {
   return `Found ${blocks.length} hands but all failed an unknown parse step.`
 }
 
-export default { name: 'PokerNow', detect, parse, diagnose }
+export default { name: 'PokerNow (CSV)', detect, parse, diagnose }

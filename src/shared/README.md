@@ -14,7 +14,7 @@ aggregations the reports are built from. Consumed by 6–8 surfaces each.
 | File | What it does |
 |---|---|
 | `types.ts` | `ParsedHand`, `HandAction`, `HandState`, `ParsedCard` — the shapes everything else speaks |
-| `parsers/` | `index.ts` re-exports `parseHandHistories` / `diagnose`; `dispatch.ts` picks a parser by format; `ignition.ts`, `pokernow.ts` |
+| `parsers/` | `index.ts` re-exports `parseHandHistories` / `diagnose`; `dispatch.ts` picks a parser by format; `ignition.ts`; `pokernow.ts` (CSV) and `pokernowJson.ts` (JSON) both read into `pokernowHand.ts`'s shared builder |
 | `computeHandState.ts` | Replays actions into per-street table state |
 | `analyzeHand.ts` | Derived per-hand summary (net, pot type, hero VPIP) |
 | `equity.ts`, `ploEval.ts` | Showdown equities; PLO hand/board classification |

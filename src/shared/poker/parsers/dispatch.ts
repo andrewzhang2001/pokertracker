@@ -1,6 +1,7 @@
 import type { ParsedHand } from '../types'
 import ignition from './ignition'
 import pokernow from './pokernow'
+import pokernowJson from './pokernowJson'
 
 export interface HandParser {
   name: string
@@ -10,7 +11,7 @@ export interface HandParser {
 }
 
 // To add a new format: import it and push it onto this list.
-const PARSERS: HandParser[] = [ignition, pokernow]
+const PARSERS: HandParser[] = [ignition, pokernow, pokernowJson]
 
 export function parseHandHistories(text: string): ParsedHand[] {
   for (const p of PARSERS) {

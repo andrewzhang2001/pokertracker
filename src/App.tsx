@@ -320,10 +320,12 @@ export default function App() {
   }, [detailKey])
 
 
-  function loadText(text: string) {
-    const parsed = dedupeAndSort(parseHandHistories(text))
+  // Each text is one file (or the paste box), parsed on its own so a batch can
+  // mix formats — JSON exports in particular can't be concatenated.
+  function loadTexts(texts: string[]) {
+    const parsed = dedupeAndSort(texts.flatMap(parseHandHistories))
     if (!parsed.length) {
-      setError(`No hands parsed. ${diagnose(text)}`)
+      setError(`No hands parsed. ${[...new Set(texts.map(diagnose))].join(' ')}`)
       return
     }
     setError(null)
@@ -338,7 +340,7 @@ export default function App() {
     if (!fileList || !fileList.length) return
     try {
       const texts = await Promise.all(Array.from(fileList).map(f => f.text()))
-      loadText(texts.join('\n\n'))
+      loadTexts(texts)
     } catch (e) {
       setError(`Couldn't read file(s): ${String((e as Error).message ?? e)}`)
     }
@@ -599,7 +601,7 @@ export default function App() {
       mapOpen={mapOpen}
       mapMode={mapMode}
       onLoadFiles={loadFiles}
-      onLoadText={loadText}
+      onLoadText={text => loadTexts([text])}
       onReset={resetImport}
       onOpenAssign={openAssign}
       onStartExport={startExport}

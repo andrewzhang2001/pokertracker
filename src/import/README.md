@@ -10,8 +10,9 @@ export them to the database.
 
 ## How it works
 
-Ignition `.txt` and PokerNow `.csv` are auto-detected by
-`shared/poker/parsers`. PokerNow logs carry player identities, so export is
+Ignition `.txt` and PokerNow `.json` / `.csv` are auto-detected by
+`shared/poker/parsers`. Each uploaded file is parsed on its own, so formats can
+be mixed in one upload. PokerNow logs carry player identities, so export is
 gated on the map step — each seat must be assigned to a profile (or made an
 anonymous one) before the hands can be written. Ignition is anonymous and skips
 the step entirely.

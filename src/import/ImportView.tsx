@@ -40,18 +40,18 @@ export default function ImportView({
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
         <h1 className="text-3xl font-bold text-white">Import hands</h1>
-        <p className="text-gray-400">Upload or paste an Ignition hand history (.txt) or PokerNow log (.csv) — format is auto-detected</p>
+        <p className="text-gray-400">Upload or paste an Ignition hand history (.txt) or PokerNow log (.json or .csv) — format is auto-detected</p>
 
         <label className="w-full max-w-2xl cursor-pointer">
           <input
             type="file"
-            accept=".txt,.csv,text/plain,text/csv"
+            accept=".txt,.csv,.json,text/plain,text/csv,application/json"
             multiple
             className="hidden"
             onChange={e => { onLoadFiles(e.target.files); e.target.value = '' }}
           />
           <div className="border-2 border-dashed border-gray-700 hover:border-yellow-500 rounded-lg p-6 text-center text-sm text-gray-400 hover:text-yellow-400 transition-colors">
-            📄 Choose file(s) — Ignition .txt or PokerNow .csv, you can select multiple
+            📄 Choose file(s) — Ignition .txt or PokerNow .json/.csv, you can select multiple
           </div>
         </label>
 

@@ -42,7 +42,7 @@ export default function ProfilesView({ onBack, onOpen }: { onBack: () => void; o
 
       {profiles && profiles.length === 0 && (
         <div className="text-gray-500 text-sm max-w-lg">
-          No profiles yet. Import a PokerNow CSV and assign the players to profiles — they'll show up here with your data on each person.
+          No profiles yet. Import a PokerNow log and assign the players to profiles — they'll show up here with your data on each person.
         </div>
       )}
 
