@@ -4,6 +4,7 @@ import { computeHandState } from '../poker/computeHandState'
 import { analyzeHand } from '../poker/analyzeHand'
 import { displayPosition } from '../poker/positionUtils'
 import PlayingCard from './PlayingCard'
+import { netTone } from '../ui/net'
 
 interface HandSummaryItem {
   index: number
@@ -76,9 +77,6 @@ export default function HandSummaryPanel({
         <div ref={scrollRef} className="absolute inset-0 overflow-y-auto no-scrollbar">
         {summaries.map(s => {
           const isActive = s.index === handIndex
-          const netColor = s.participated
-            ? s.netBB > 0 ? 'text-green-400' : s.netBB < 0 ? 'text-red-400' : 'text-gray-500'
-            : 'text-gray-500'
 
           return (
             <div
@@ -92,7 +90,7 @@ export default function HandSummaryPanel({
                   : <span className="text-gray-600 text-xs w-[48px]">—</span>}
               </div>
               <span className="text-gray-400 text-xs w-7 shrink-0 text-center">{s.posLabel}</span>
-              <span className={`text-xs ml-auto shrink-0 ${netColor}`}>{netStr(s.netBB)}</span>
+              <span className={`text-xs ml-auto shrink-0 ${netTone(s.netBB, s.participated)}`}>{netStr(s.netBB)}</span>
               {handNotes[s.index] && (
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" title={handNotes[s.index]} />
               )}

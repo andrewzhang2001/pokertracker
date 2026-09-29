@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ParsedHand } from '../shared/poker/types'
-import { fetchProfiles, type Profile } from '../shared/api/profilesApi'
+import { fetchProfiles, lookupIdentities, type Profile } from '../shared/api/profilesApi'
 import { netForSeat } from '../shared/poker/graph'
 
 // One distinct raw site identity across the import, plus the per-hand seat links
@@ -69,17 +69,26 @@ export default function MapPlayersModal({ identities, initial, confirmLabel = 'S
   const [assign, setAssign] = useState<Record<string, Assign>>({})
 
   useEffect(() => {
-    fetchProfiles().then(ps => {
-      setProfiles(ps)
+    const noneKnown = new Map<string, { profileId: number; anonymous: boolean }>()
+    Promise.all([
+      fetchProfiles(),
+      lookupIdentities(identities.map(i => i.rawName)).catch(() => noneKnown),
+    ]).then(([ps, known]) => {
+      // Anonymous profiles hold only their own identity, so they're never offered
+      // as a destination.
+      setProfiles(ps.filter(p => !p.anonymous))
       const hero = ps.find(p => p.isHero)
       const prior = new Map((initial ?? []).map(a => [a.rawName, a]))
-      // Default: hero → your self profile (or a new one named after your handle);
-      // everyone else → anonymous (the "don't care" path), still one click to
-      // change. A prior saved assignment wins over the default.
+      // Default, first match wins: a prior saved assignment; the named profile
+      // this identity already belongs to; for your seat, your self profile (or a
+      // new one named after your handle); everyone else → anonymous (the "don't
+      // care" path), still one click to change.
       const init: Record<string, Assign> = {}
       for (const id of identities) {
         const p = prior.get(id.rawName)
+        const owner = known.get(id.rawName)
         if (p) init[id.rawName] = fromAssignment(p)
+        else if (owner && !owner.anonymous) init[id.rawName] = { kind: 'existing', existingId: owner.profileId }
         else if (id.isHero) init[id.rawName] = hero ? { kind: 'existing', existingId: hero.id } : { kind: 'new', newName: id.displayName }
         else init[id.rawName] = { kind: 'anon' }
       }

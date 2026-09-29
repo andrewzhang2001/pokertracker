@@ -83,6 +83,13 @@ const withStake = (p: URLSearchParams, stake?: StakeFilter) => {
   return p
 }
 
+// Optional site filter. '' = every site.
+export type SiteFilter = '' | 'ignition' | 'pokernow'
+const withSite = (p: URLSearchParams, site?: SiteFilter) => {
+  if (site) p.set('site', site)
+  return p
+}
+
 // A distinct stake present in the pool (one dropdown row). Identified by big
 // blind — the small blind is unreliable (short/dead posts record a reduced amount).
 export interface StakeInfo {
@@ -104,8 +111,8 @@ export function stakeLabel(s: StakeInfo): string {
 
 // Distinct stakes present. scope='mine' → the viewer's own hands (graph);
 // 'all' → the whole pool (reports). Optional game (plo/nlhe) narrows the list.
-export async function fetchStakes(scope: 'mine' | 'all', game?: GameKind): Promise<StakeInfo[]> {
-  const p = new URLSearchParams({ view: 'stakes' })
+export async function fetchStakes(scope: 'mine' | 'all', game?: GameKind, site?: SiteFilter): Promise<StakeInfo[]> {
+  const p = withSite(new URLSearchParams({ view: 'stakes' }), site)
   if (scope === 'mine') p.set('scope', 'mine')
   if (game) p.set('game', game)
   const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
@@ -120,8 +127,8 @@ export async function fetchStakes(scope: 'mine' | 'all', game?: GameKind): Promi
 
 // The compact per-combo report grid (one GROUP BY over preflop_spots). Drives
 // every report tile without shipping the hand pool to the browser.
-export async function fetchReportGrid(range?: DateRange, stake?: StakeFilter): Promise<ReportGridRow[]> {
-  const p = withStake(withRange(new URLSearchParams({ view: 'reports' }), range), stake)
+export async function fetchReportGrid(range?: DateRange, stake?: StakeFilter, site?: SiteFilter): Promise<ReportGridRow[]> {
+  const p = withSite(withStake(withRange(new URLSearchParams({ view: 'reports' }), range), stake), site)
   const res = await fetch(`/api/hands?${p}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load reports')
   const data = await res.json() as { grid?: ReportGridRow[] }
@@ -130,8 +137,8 @@ export async function fetchReportGrid(range?: DateRange, stake?: StakeFilter): P
 
 // Hands for ONE report's drill-down — only those with a qualifying spot, so the
 // detail view can re-derive populated bucket lists with buildReport cheaply.
-export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange, game: GameKind = 'plo', combo?: string, stake?: StakeFilter): Promise<{ hands: ParsedHand[]; notes: string[] }> {
-  const p = withStake(withRange(new URLSearchParams({ view: 'report-hands', subject, kind, game }), range), stake)
+export async function fetchReportHands(sel: ReportSel, subject: 'hero' | 'population', kind: TableKind, range?: DateRange, game: GameKind = 'plo', combo?: string, stake?: StakeFilter, site?: SiteFilter): Promise<{ hands: ParsedHand[]; notes: string[] }> {
+  const p = withSite(withStake(withRange(new URLSearchParams({ view: 'report-hands', subject, kind, game }), range), stake), site)
   if (combo) p.set('combo', combo) // drill to one 13×13 grid cell
   if (sel.type === 'rfi') { p.set('type', 'rfi'); p.set('pos_a', sel.pos) }
   else if (sel.type === 'vsrfi') { p.set('type', 'vsrfi'); p.set('pos_a', sel.defender); p.set('pos_b', sel.opener) }
@@ -159,27 +166,27 @@ export function clearPostflopCache(): void {
   flopCountsCache.clear()
 }
 
-const flopSpotsKey = (formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind) =>
-  withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId, mode, game }), range).toString()
+const flopSpotsKey = (formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind, site?: SiteFilter) =>
+  withSite(withRange(new URLSearchParams({ view: 'flop-spots', formation: formationId, mode, game }), range), site).toString()
 
-const flopCountsKey = (mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind) => {
-  const q = withRange(new URLSearchParams({ view: 'flop-counts', mode, game }), range)
+const flopCountsKey = (mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind, site?: SiteFilter) => {
+  const q = withSite(withRange(new URLSearchParams({ view: 'flop-counts', mode, game }), range), site)
   writeFilter(q, filter)
   return q.toString()
 }
 
-export function peekFlopSpots(formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind): FlopSpot[] | undefined {
-  return flopSpotsCache.get(flopSpotsKey(formationId, range, mode, game))
+export function peekFlopSpots(formationId: string, range: DateRange | undefined, mode: PostflopMode, game: GameKind, site?: SiteFilter): FlopSpot[] | undefined {
+  return flopSpotsCache.get(flopSpotsKey(formationId, range, mode, game, site))
 }
-export function peekFlopCounts(mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind): Record<string, number> | undefined {
-  return flopCountsCache.get(flopCountsKey(mode, filter, range, game))
+export function peekFlopCounts(mode: PostflopMode, filter: PostflopFilter, range: DateRange | undefined, game: GameKind, site?: SiteFilter): Record<string, number> | undefined {
+  return flopCountsCache.get(flopCountsKey(mode, filter, range, game, site))
 }
 
 // One formation's slim postflop spots — the browser runs the node-walk over
 // these (board texture / line / node / mode all stay client-side). `hand` is
 // omitted; drill-down resolves it via fetchHandsByIds.
-export async function fetchFlopSpots(formationId: string, range?: DateRange, mode: PostflopMode = 'population', game: GameKind = 'plo'): Promise<FlopSpot[]> {
-  const key = flopSpotsKey(formationId, range, mode, game)
+export async function fetchFlopSpots(formationId: string, range?: DateRange, mode: PostflopMode = 'population', game: GameKind = 'plo', site?: SiteFilter): Promise<FlopSpot[]> {
+  const key = flopSpotsKey(formationId, range, mode, game, site)
   const hit = flopSpotsCache.get(key)
   if (hit) return hit
   const res = await fetch(`/api/hands?${key}`, { headers: await authHeaders() })
@@ -191,8 +198,8 @@ export async function fetchFlopSpots(formationId: string, range?: DateRange, mod
 }
 
 // Per-formation sample counts under the active board filter (postflop menu tiles).
-export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange, game: GameKind = 'plo'): Promise<Record<string, number>> {
-  const key = flopCountsKey(mode, filter, range, game)
+export async function fetchFlopCounts(mode: PostflopMode, filter: PostflopFilter, range?: DateRange, game: GameKind = 'plo', site?: SiteFilter): Promise<Record<string, number>> {
+  const key = flopCountsKey(mode, filter, range, game, site)
   const hit = flopCountsCache.get(key)
   if (hit) return hit
   const res = await fetch(`/api/hands?${key}`, { headers: await authHeaders() })
@@ -216,8 +223,8 @@ export async function fetchHandsByIds(ids: string[]): Promise<ParsedHand[]> {
 
 // Lightweight graph feed — YOUR precomputed per-hand result numbers (no parsing).
 // `game` optionally restricts to PLO or NLHE; omitted = all games.
-export async function fetchGraphFromDb(game?: GameKind, stake?: StakeFilter): Promise<GraphRow[]> {
-  const q = withStake(new URLSearchParams({ view: 'graph' }), stake)
+export async function fetchGraphFromDb(game?: GameKind, stake?: StakeFilter, site?: SiteFilter): Promise<GraphRow[]> {
+  const q = withSite(withStake(new URLSearchParams({ view: 'graph' }), stake), site)
   if (game) q.set('game', game)
   const res = await fetch(`/api/hands?${q}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load graph')
@@ -245,9 +252,9 @@ export interface HandsPage {
 // server-side so a page is always `limit` *matching* hands — filtering after
 // paginating would give ragged pages and a wrong count.
 export async function fetchHandsPageFromDb(
-  { limit, offset, vpip }: { limit: number; offset: number; vpip: VpipFilter },
+  { limit, offset, vpip, site }: { limit: number; offset: number; vpip: VpipFilter; site?: SiteFilter },
 ): Promise<HandsPage> {
-  const qs = new URLSearchParams({ view: 'mine', limit: String(limit), offset: String(offset), vpip })
+  const qs = withSite(new URLSearchParams({ view: 'mine', limit: String(limit), offset: String(offset), vpip }), site)
   const res = await fetch(`/api/hands?${qs}`, { headers: await authHeaders() })
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'Failed to load hands')
   const data = await res.json() as {

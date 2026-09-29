@@ -22,8 +22,18 @@ export const HAND_PLAYERS_PROFILE_IDX = `CREATE INDEX IF NOT EXISTS hand_players
 // profile's summed net is that person's actual result (not hero-centric).
 export const HAND_PLAYERS_ADD_NET_BB = `ALTER TABLE hand_players ADD COLUMN IF NOT EXISTS net_bb numeric`
 
+// The seat's PokerNow identity ("name @ token"), stamped at import. Every seat
+// with the same raw_name belongs to the same profile: identities move between
+// profiles as a whole. NULL for rows stamped before this column existed whose
+// raw_text couldn't be re-parsed.
+export const HAND_PLAYERS_ADD_RAW_NAME = `ALTER TABLE hand_players ADD COLUMN IF NOT EXISTS raw_name text`
+
+export const HAND_PLAYERS_RAW_NAME_IDX = `CREATE INDEX IF NOT EXISTS hand_players_raw_name ON hand_players (owner_id, raw_name)`
+
 export const HAND_PLAYERS: string[] = [
   CREATE_HAND_PLAYERS,
   HAND_PLAYERS_PROFILE_IDX,
   HAND_PLAYERS_ADD_NET_BB,
+  HAND_PLAYERS_ADD_RAW_NAME,
+  HAND_PLAYERS_RAW_NAME_IDX,
 ]

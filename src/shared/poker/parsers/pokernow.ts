@@ -175,7 +175,10 @@ function lineEvent(line: string, nameToSeat: Map<string, number>): PokerNowEvent
   const pm = line.match(POST)
   if (pm) {
     const seat = nameToSeat.get(pm[1])
-    return seat === undefined ? null : { kind: 'post', seat, amount: parseAmt(pm[3]), blind: BLIND_KIND[pm[2]] ?? 'other' }
+    if (seat === undefined) return null
+    const amount = parseAmt(pm[3])
+    if (pm[2] === 'missing small blind') return { kind: 'dead', seat, amount, what: 'small blind' }
+    return { kind: 'post', seat, amount, blind: BLIND_KIND[pm[2]] ?? 'other' }
   }
   for (const [street, re] of BOARD) {
     const bm = line.match(re)

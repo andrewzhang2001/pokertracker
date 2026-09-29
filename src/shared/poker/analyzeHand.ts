@@ -45,6 +45,12 @@ export interface HandAnalysis {
 // Voluntary money actions — posting blinds/antes is forced and excluded.
 const VOLUNTARY_TYPES: HandAction['type'][] = ['call', 'raise', 'bet', 'allin']
 
+// VPIP at one seat: a call, bet, raise, or all-in on any street. Blind and
+// ante posts don't count.
+export function voluntarilyEntered(hand: ParsedHand, seat: number): boolean {
+  return hand.actions.some(a => a.seatNumber === seat && VOLUNTARY_TYPES.includes(a.type))
+}
+
 const AGGRO_TYPES: HandAction['type'][] = ['bet', 'raise', 'allin']
 
 export function analyzeHand(hand: ParsedHand): HandAnalysis {
@@ -109,8 +115,7 @@ export function analyzeHand(hand: ParsedHand): HandAnalysis {
   const heroIsPfr = heroSeat !== null && pfrSeat === heroSeat
   const heroFlopCbetOpportunity = heroIsPfr && !!flopCbet?.opportunity
   const heroFlopCbet = heroIsPfr && !!flopCbet?.took
-  const heroVpip = heroSeat !== null &&
-    hand.actions.some(a => a.seatNumber === heroSeat && VOLUNTARY_TYPES.includes(a.type))
+  const heroVpip = heroSeat !== null && voluntarilyEntered(hand, heroSeat)
 
   return {
     handId: hand.handId,

@@ -1,17 +1,18 @@
 import HandReplayer from '../shared/replayer/HandReplayer'
 import CenteredMessage from '../shared/ui/CenteredMessage'
 import type { ParsedHand } from '../shared/poker/types'
-import type { VpipFilter } from '../shared/api/handsApi'
+import type { SiteFilter, VpipFilter } from '../shared/api/handsApi'
+import { SiteToggle } from '../shared/ui/SiteToggle'
 
 // The personal hand browser: one server-fetched page at a time in the replayer,
-// with a VPIP filter and a pager in the top bar.
+// with site and VPIP filters and a pager in the top bar.
 //
 // The page/filter state and the fetch live in App, not here — leaving the view
 // and coming back must keep the page you were on, and this component unmounts
 // when you navigate away.
 export default function DatabaseView({
   status, error, loadedKey, hands, notes, counts, page, pageCount, pageSize,
-  landOn, vpipFilter, onVpipFilter, onGoToPage, onUpdateNote, onNavigate,
+  landOn, vpipFilter, onVpipFilter, site, onSite, onGoToPage, onUpdateNote, onNavigate,
 }: {
   status: 'idle' | 'loading' | 'error'
   error: string | null
@@ -25,6 +26,8 @@ export default function DatabaseView({
   landOn: 'first' | 'last'
   vpipFilter: VpipFilter
   onVpipFilter: (next: VpipFilter) => void
+  site: SiteFilter
+  onSite: (next: SiteFilter) => void
   onGoToPage: (next: number, landOn?: 'first' | 'last') => void
   onUpdateNote: (index: number, value: string) => void
   onNavigate: (to: string) => void
@@ -45,8 +48,10 @@ export default function DatabaseView({
   const firstShown = page * pageSize + 1
   const lastShown = page * pageSize + hands.length
 
+  const filtering = vpipFilter !== 'all' || site !== ''
   const filterBar = (
     <div className="flex items-center gap-3">
+      <SiteToggle site={site} onChange={onSite} />
       <label className="flex items-center gap-1.5 text-xs text-gray-400">
         VPIP
         <select
@@ -60,7 +65,7 @@ export default function DatabaseView({
         </select>
         {/* matching / total — only differs when a filter is on */}
         <span className="text-gray-600">
-          {counts.filtered}{vpipFilter !== 'all' ? `/${counts.total}` : ''}
+          {counts.filtered}{filtering ? `/${counts.total}` : ''}
         </span>
       </label>
       {counts.filtered > 0 && (
@@ -91,7 +96,7 @@ export default function DatabaseView({
       <div className="min-h-screen flex flex-col items-center justify-center p-8 gap-4">
         <h1 className="text-2xl font-bold text-white">No hands match this filter</h1>
         <div>{filterBar}</div>
-        <button onClick={() => onVpipFilter('all')} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
+        <button onClick={() => { onVpipFilter('all'); onSite('') }} className="px-6 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">Reset filter</button>
         <button onClick={() => onNavigate('/')} className="text-xs text-gray-500 hover:text-white">← Home</button>
       </div>
     )

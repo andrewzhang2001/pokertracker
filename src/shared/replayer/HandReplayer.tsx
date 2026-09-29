@@ -1,9 +1,10 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { computeHandState } from '../poker/computeHandState'
 import type { ParsedHand } from '../poker/types'
 import PokerTable from './PokerTable'
 import HandSummaryPanel from './HandSummaryPanel'
+import StepControls, { clampStep, useReplayerKeys } from './StepControls'
 
 interface Props {
   hands: ParsedHand[]
@@ -51,20 +52,10 @@ export default function HandReplayer({
 
   const goStep = useCallback((delta: number) => {
     if (!hand) return
-    setStepIndex(i => Math.max(-1, Math.min(hand.actions.length - 1, i + delta)))
+    setStepIndex(i => clampStep(hand, i + delta))
   }, [hand])
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLTextAreaElement) return
-      if (e.key === 'ArrowRight') goStep(1)
-      else if (e.key === 'ArrowLeft') goStep(-1)
-      else if (e.key === 'ArrowUp') { e.preventDefault(); goHand(-1) }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); goHand(1) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [goStep, goHand])
+  useReplayerKeys(goStep, goHand)
 
   const totalSteps = hand ? hand.actions.length : 0
   const currentDesc = state?.lastAction?.desc ?? '—'
@@ -124,25 +115,8 @@ export default function HandReplayer({
       {/* Bottom bar */}
       {hand && (
         <div className="border-t border-gray-800 bg-black/50 px-4 py-2">
-          <div className="flex items-center gap-3 max-w-3xl mx-auto">
-            <button
-              onClick={() => goStep(-1)}
-              disabled={stepIndex <= -1}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-sm font-bold"
-            >
-              ←
-            </button>
-            <div className="flex-1 text-center">
-              <span className="text-white text-sm">{currentDesc}</span>
-              <span className="text-gray-600 text-xs ml-2">{stepIndex + 1} / {totalSteps}</span>
-            </div>
-            <button
-              onClick={() => goStep(1)}
-              disabled={stepIndex >= totalSteps - 1}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-30 text-sm font-bold"
-            >
-              →
-            </button>
+          <div className="max-w-3xl mx-auto">
+            <StepControls stepIndex={stepIndex} totalSteps={totalSteps} desc={currentDesc} onStep={goStep} />
           </div>
           <textarea
             className="w-full max-w-3xl mx-auto block mt-2 bg-transparent text-gray-300 text-sm placeholder-gray-700 resize-none focus:outline-none focus:placeholder-gray-600 transition-colors"

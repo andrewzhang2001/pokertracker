@@ -12,7 +12,8 @@ import { KindToggle } from '../shared/ui/KindToggle'
 import { GameToggle } from '../shared/ui/GameToggle'
 import { MonthRange } from '../shared/ui/MonthRange'
 import { StakePicker } from '../shared/ui/StakePicker'
-import type { StakeInfo } from '../shared/api/handsApi'
+import type { SiteFilter, StakeInfo } from '../shared/api/handsApi'
+import { SiteToggle } from '../shared/ui/SiteToggle'
 import { loadSolver, solverUrl } from './solver'
 import PlayingCard from '../shared/replayer/PlayingCard'
 import EvBandsPanel from './EvBandsPanel'
@@ -121,7 +122,7 @@ function SizePicker({ label, options, value, onChange }: {
 // ---------------------------------------------------------------------------
 // Reports menu — horizontal rows of report tiles (room to add more sets).
 // ---------------------------------------------------------------------------
-export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, monthTo, onMonths, stakes, stake, onStake, openSize, threebetSize, onOpenSize, onThreebetSize, onOpen, onBack, subject = 'population', title = 'Reports' }: {
+export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, monthTo, onMonths, stakes, stake, onStake, site, onSite, openSize, threebetSize, onOpenSize, onThreebetSize, onOpen, onBack, subject = 'population', title = 'Reports' }: {
   grid: ReportGridRow[]
   kind: TableKind
   onKind: (k: TableKind) => void
@@ -133,6 +134,8 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
   stakes: StakeInfo[]
   stake: string
   onStake: (stake: string) => void
+  site: SiteFilter
+  onSite: (site: SiteFilter) => void
   // Top-level faced-size filter (PLO). openSize slices the vs-RFI tiles by the
   // open size, threebetSize slices the vs-3-bet tiles by the 3-bet size; the
   // choice rides into whichever report is opened (via the sel's `size`).
@@ -241,6 +244,7 @@ export function ReportsMenu({ grid, kind, onKind, game, onGame, monthFrom, month
         <h1 className="text-2xl font-bold text-white">{title}</h1>
         <GameToggle game={game} onChange={onGame} />
         <KindToggle kind={kind} onChange={onKind} />
+        <SiteToggle site={site} onChange={onSite} />
         <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <StakePicker stakes={stakes} value={stake} onChange={onStake} />
         <span className="text-gray-600 text-xs">{subject === 'hero' ? 'your hands' : 'population · excludes your hands'} · 75bb+</span>

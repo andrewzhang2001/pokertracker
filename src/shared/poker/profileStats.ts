@@ -1,5 +1,5 @@
 import type { ParsedHand, HandAction } from './types'
-import { analyzeHand } from './analyzeHand'
+import { analyzeHand, voluntarilyEntered } from './analyzeHand'
 import { displayPosition, POSITION_RANK } from './positionUtils'
 import { holdemCombo } from './holdemCombo'
 
@@ -53,7 +53,12 @@ export interface ProfileStats {
 }
 
 const RAISE = new Set<HandAction['type']>(['raise', 'allin'])
-const VOLUNTARY = new Set<HandAction['type']>(['call', 'raise', 'bet', 'allin'])
+
+// The flop was dealt and this seat hadn't folded preflop.
+export function sawFlop(hand: ParsedHand, seat: number): boolean {
+  const foldedPreflop = hand.actions.some(a => a.street === 'preflop' && a.seatNumber === seat && a.type === 'fold')
+  return !foldedPreflop && hand.actions.some(a => a.type === 'deal_flop')
+}
 
 const SPOT_META: Record<SpotKey, { label: string; raiseLabel: string }> = {
   open:   { label: 'Open (first in)', raiseLabel: 'RFI' },
@@ -127,10 +132,9 @@ export function computeProfileStats(hands: { hand: ParsedHand; seat: number }[])
 
     // Walk preflop in order, tracking raises faced and pre-raise limps so each of
     // the player's decisions lands in the right node (open / vs-open / …).
-    let raises = 0, limps = 0, openRecorded = false, firstRecorded = false, didVpip = false, didPfr = false
+    let raises = 0, limps = 0, openRecorded = false, firstRecorded = false, didPfr = false
     for (const a of pf) {
       if (a.seatNumber === seat) {
-        if (VOLUNTARY.has(a.type)) didVpip = true
         if (RAISE.has(a.type)) didPfr = true
         const key: SpotKey | null =
           raises === 0 && limps === 0 ? 'open'
@@ -164,7 +168,7 @@ export function computeProfileStats(hands: { hand: ParsedHand; seat: number }[])
       if (RAISE.has(a.type)) raises++
       else if (a.type === 'call' && raises === 0) limps++
     }
-    vpip.opp++; if (didVpip) vpip.made++
+    vpip.opp++; if (voluntarilyEntered(hand, seat)) vpip.made++
     pfr.opp++; if (didPfr) pfr.made++
 
     const cb = analyzeHand(hand).flopCbet

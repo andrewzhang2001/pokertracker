@@ -6,7 +6,7 @@ import {
 } from '../shared/poker/postflop'
 import type { HandClass } from '../shared/poker/ploEval'
 import type { GameKind } from '../shared/poker/games'
-import { fetchFlopSpots, fetchHandsByIds, peekFlopSpots } from '../shared/api/handsApi'
+import { fetchFlopSpots, fetchHandsByIds, peekFlopSpots, type SiteFilter } from '../shared/api/handsApi'
 import { monthRange } from '../shared/ui/MonthRange'
 import PlayingCard from '../shared/replayer/PlayingCard'
 import PostflopFilters from './PostflopFilters'
@@ -30,6 +30,7 @@ interface Props {
   game: GameKind
   monthFrom: string
   monthTo: string
+  site: SiteFilter
   onOpenHands: (hands: ParsedHand[], index: number) => void
   onBack: () => void
 }
@@ -264,7 +265,7 @@ function FacingRange({ comp, barColor, onView }: { comp: RangeComp; barColor: st
   )
 }
 
-export default function PostflopView({ formationId, nodeId, game, monthFrom, monthTo, onOpenHands, onBack }: Props) {
+export default function PostflopView({ formationId, nodeId, game, monthFrom, monthTo, site, onOpenHands, onBack }: Props) {
   const init = readState()
   const [mode, setMode] = useState<PostflopMode>(init.mode)
   const [filter, setFilter] = useState<PostflopFilter>(init.filter)
@@ -277,8 +278,8 @@ export default function PostflopView({ formationId, nodeId, game, monthFrom, mon
       : [...s.flop, ...(s.turnCard ? [s.turnCard] : []), ...(s.riverCard ? [s.riverCard] : [])]
   // Only this formation's spots are loaded; the node report (texture/node/mode)
   // is computed client-side. Drill-down resolves hand ids on demand.
-  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game) ?? [])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
+  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game, site) ?? [])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game, site).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game, site])
   // Bet-size filter (only when facing a bet): narrows all panels to that faced size.
   const facesBet = node ? nodeFacesBet(node) : false
   const [facedBet, setFacedBet] = useState<BetBucket>('all')

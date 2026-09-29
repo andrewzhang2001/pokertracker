@@ -32,12 +32,15 @@ const EV = {
   smallBlind: 3,
   missedBigBlind: 4,
   missingSmallBlind: 5,
+  straddle: 6,
   call: 7,
   betOrRaise: 8,
   board: 9,
   collect: 10,
   fold: 11,
   show: 12,
+  ante: 13,
+  runItTwiceVote: 14,   // approved/denied seats; moves no chips, so ignored
   handEnd: 15,
   uncalled: 16,
 } as const
@@ -92,7 +95,9 @@ function readEvents(hand: JsonHand): PokerNowEvent[] {
       case EV.smallBlind: post(seat, value, 'small'); break
       case EV.bigBlind: post(seat, value, 'big'); break
       case EV.missedBigBlind:
-      case EV.missingSmallBlind: post(seat, value, 'other'); break
+      case EV.straddle: post(seat, value, 'other'); break
+      case EV.missingSmallBlind: events.push({ kind: 'dead', seat, amount: value, what: 'small blind' }); break
+      case EV.ante: events.push({ kind: 'dead', seat, amount: value, what: 'ante' }); break
       case EV.fold: events.push({ kind: 'fold', seat }); break
       case EV.check: events.push({ kind: 'check', seat }); break
       case EV.call: events.push({ kind: 'call', seat, level: value, allin }); break
@@ -128,13 +133,25 @@ function readShown(hand: JsonHand, heroSeat: number | undefined): Map<number, Pa
   return shown
 }
 
+// Chips each seat paid in antes this hand.
+function antesBySeat(hand: JsonHand): Map<number, number> {
+  const paid = new Map<number, number>()
+  for (const { payload: p } of hand.events) {
+    if (p.type === EV.ante && p.seat !== undefined) paid.set(p.seat, (paid.get(p.seat) ?? 0) + (p.value ?? 0))
+  }
+  return paid
+}
+
 function readHand(hand: JsonHand, exp: JsonExport): PokerNowHand {
   const hero = hand.players.find(p => p.id === exp.playerId)
+  // PokerNow records each player's stack after the ante is taken; add it back
+  // so the stack is the one the hand started with.
+  const antes = antesBySeat(hand)
   return {
     id: hand.id,
     gameType: GAME_TYPES[hand.gameType] ?? hand.gameType.toUpperCase(),
     at: new Date(hand.startedAt).toISOString(),
-    seats: hand.players.map(p => ({ seat: p.seat, sourceName: `${p.name} @ ${p.id}`, stack: p.stack })),
+    seats: hand.players.map(p => ({ seat: p.seat, sourceName: `${p.name} @ ${p.id}`, stack: p.stack + (antes.get(p.seat) ?? 0) })),
     dealerSeat: hand.dealerSeat,
     heroSeat: hero?.seat,
     heroCards: hero ? parseCards(hero.hand) : undefined,

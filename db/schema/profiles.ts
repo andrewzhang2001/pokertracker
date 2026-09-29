@@ -1,8 +1,10 @@
 // `profiles` — the people you've played against, per account.
 //
-// There is deliberately no alias table: identities aren't auto-matched. You map
-// each seat at import (an unassigned one becomes an anonymous profile named by
-// its raw identity), and unify a person's different-token identities with merge.
+// There is deliberately no alias table: a seat's identity lives on
+// hand_players.raw_name. You map each identity at import (an unassigned one
+// becomes an anonymous profile named by its raw identity), and move identities
+// between profiles afterwards. An anonymous profile holds exactly one identity
+// and is never a move/merge target; naming it clears `anonymous`.
 
 export const CREATE_PROFILES = `
   CREATE TABLE IF NOT EXISTS profiles (

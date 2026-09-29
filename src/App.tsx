@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { parseHandHistories, diagnose } from './shared/poker/parsers'
 // fetchHandsPageFromDb / VpipFilter drive the paginated database browser, which
 // is separate from the aggregated report grid below.
-import { exportHandsToDb, fetchHandsPageFromDb, fetchReportGrid, fetchReportHands, fetchStakes, type DateRange, type StakeInfo, type VpipFilter } from './shared/api/handsApi'
+import { exportHandsToDb, fetchHandsPageFromDb, fetchReportGrid, fetchReportHands, fetchStakes, type DateRange, type SiteFilter, type StakeInfo, type VpipFilter } from './shared/api/handsApi'
 import { monthRange } from './shared/ui/MonthRange'
 import { dedupeAndSort } from './shared/poker/mergeHands'
 import { buildReport, RFI_POSITIONS, VS_RFI_DEFENDERS, openersFor, VS3BET_REPORTS, SIZE_OPTIONS, DEFAULT_SIZE, type SizeAxis, type ReportSel, type ReportGridRow, type Vs3betTag, type LimpIsoTag, type LimpMultiway, type SolverTable } from './shared/poker/reports'
@@ -168,6 +168,8 @@ export default function App() {
   // Stake filter (composite key; '' = all stakes), shared across reports/leakbuster.
   const [stakeFilter, setStakeFilter] = useState('')
   const [stakes, setStakes] = useState<StakeInfo[]>([])
+  // Site filter ('' = every site), shared across reports/leakbuster/postflop/database.
+  const [site, setSite] = useState<SiteFilter>('')
   // Top-level faced-size filter (PLO): the open-size bucket for vs-RFI tiles and
   // the 3-bet-size bucket for vs-3-bet tiles. Rides into the opened report via
   // the sel's `size` (→ URL ?sz), where the detail's own toggle can refine it.
@@ -190,12 +192,12 @@ export default function App() {
   // Your own hands — the personal database browser. The VPIP filter is part of
   // the query (not a client-side pass over the page) so that pages are full and
   // the counts describe the whole filtered set rather than the current page.
-  async function loadDatabase(page: number, vpip: VpipFilter) {
+  async function loadDatabase(page: number, vpip: VpipFilter, site: SiteFilter) {
     setDbStatus('loading')
     setDbError(null)
     try {
       const res = await fetchHandsPageFromDb({
-        limit: DB_PAGE_SIZE, offset: page * DB_PAGE_SIZE, vpip,
+        limit: DB_PAGE_SIZE, offset: page * DB_PAGE_SIZE, vpip, site,
       })
       // Offset landed past the end (e.g. hands removed since the count) — retry at
       // the top rather than showing an empty replayer.
@@ -207,7 +209,7 @@ export default function App() {
       setDbHands(res.hands)
       setDbNotes(res.notes)
       setDbCounts({ total: res.total, filtered: res.filtered })
-      setDbLoadedKey(`${vpip}-${page}`)
+      setDbLoadedKey(`${site}-${vpip}-${page}`)
       setDbStatus('idle')
     } catch (e) {
       setDbError(String((e as Error).message ?? e))
@@ -223,21 +225,28 @@ export default function App() {
 
   // Switching filters changes which hands exist, so any page number beyond the
   // first is meaningless — start over at the top of the new result set.
-  function changeVpipFilter(next: VpipFilter) {
-    setVpipFilter(next)
+  function restartDbPaging() {
     setDbLandOn('first')
     setDbPage(0)
+  }
+  function changeVpipFilter(next: VpipFilter) {
+    setVpipFilter(next)
+    restartDbPaging()
+  }
+  function changeDbSite(next: SiteFilter) {
+    setSite(next)
+    restartDbPaging()
   }
 
   // Reports/Leakbuster — the per-combo preflop grid (no hand pool fetched). It
   // serves the tiles, the report detail and the NLHE hand grid, so it carries a
   // row per (report, combo, action) and is tens of thousands of rows: fetched
   // on demand rather than prefetched, and cached by filter combination.
-  async function loadReportGrid(range: DateRange, stake: string, key: string) {
+  async function loadReportGrid(range: DateRange, stake: string, site: SiteFilter, key: string) {
     setReportStatus('loading')
     setReportError(null)
     try {
-      setReportGrid(await fetchReportGrid(range, stake || undefined))
+      setReportGrid(await fetchReportGrid(range, stake || undefined, site))
       setGridLoadedKey(key)
       setReportStatus('idle')
     } catch (e) {
@@ -262,27 +271,27 @@ export default function App() {
   // for a multi-megabyte response on the landing page and on every filter
   // change regardless of whether a report was open.
   const needsGrid = view === 'reports' || view === 'leakbuster'
-  const gridKey = `${monthFrom}:${monthTo}:${stakeFilter}`
+  const gridKey = `${monthFrom}:${monthTo}:${stakeFilter}:${site}`
   useEffect(() => {
     if (!needsGrid || gridLoadedKey === gridKey) return
-    loadReportGrid(monthRange(monthFrom, monthTo), stakeFilter, gridKey)
+    loadReportGrid(monthRange(monthFrom, monthTo), stakeFilter, site, gridKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [needsGrid, gridKey, gridLoadedKey])
 
   // The stakes present in the pool (for the active game) → the stake picker.
   useEffect(() => {
     let cancelled = false
-    fetchStakes('all', game).then(s => { if (!cancelled) setStakes(s) }).catch(() => { if (!cancelled) setStakes([]) })
+    fetchStakes('all', game, site).then(s => { if (!cancelled) setStakes(s) }).catch(() => { if (!cancelled) setStakes([]) })
     return () => { cancelled = true }
-  }, [game])
+  }, [game, site])
 
   // The database view fetches per page and per filter; `view` is in the deps so
   // this also covers entering it. Postflop fetches its own per-formation spots
   // inside PostflopMenu/View, and the report grid is kept fresh above.
   useEffect(() => {
-    if (view === 'database') loadDatabase(dbPage, vpipFilter)
+    if (view === 'database') loadDatabase(dbPage, vpipFilter, site)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, dbPage, vpipFilter])
+  }, [view, dbPage, vpipFilter, site])
 
   // Lazy-load the GTO solver table for the open report.
   useEffect(() => {
@@ -303,7 +312,7 @@ export default function App() {
   // Keyed on the report's identity (not multiway — that's filtered client-side).
   const reportSelForDetail = (view === 'reports' || view === 'leakbuster') ? parseReportSel(path) : null
   const detailKey = reportSelForDetail
-    ? `${view}:${game}:${kind}:${monthFrom}:${monthTo}:${stakeFilter}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
+    ? `${view}:${game}:${kind}:${monthFrom}:${monthTo}:${stakeFilter}:${site}:${reportSelForDetail.type}:${'pos' in reportSelForDetail ? reportSelForDetail.pos : ''}:${'defender' in reportSelForDetail ? reportSelForDetail.defender : ''}:${'opener' in reportSelForDetail ? reportSelForDetail.opener : ''}:${'tag' in reportSelForDetail ? reportSelForDetail.tag : ''}:${'iso' in reportSelForDetail ? reportSelForDetail.iso : ''}`
     : ''
   useEffect(() => {
     // NLHE builds its 13×13 grid straight off the aggregate grid — no hand-pool fetch.
@@ -312,7 +321,7 @@ export default function App() {
     let cancelled = false
     setDetailStatus('loading')
     setDetailHands([])
-    fetchReportHands(reportSelForDetail, subject, kind, monthRange(monthFrom, monthTo), 'plo', undefined, stakeFilter || undefined)
+    fetchReportHands(reportSelForDetail, subject, kind, monthRange(monthFrom, monthTo), 'plo', undefined, stakeFilter || undefined, site)
       .then(({ hands }) => { if (!cancelled) { setDetailHands(hands); setDetailStatus('idle') } })
       .catch(() => { if (!cancelled) setDetailStatus('error') })
     return () => { cancelled = true }
@@ -418,6 +427,8 @@ export default function App() {
         landOn={dbLandOn}
         vpipFilter={vpipFilter}
         onVpipFilter={changeVpipFilter}
+        site={site}
+        onSite={changeDbSite}
         onGoToPage={goToDbPage}
         onUpdateNote={(idx, value) => {
           setDbNotes(prev => { const n = [...prev]; n[idx] = value; return n })
@@ -457,7 +468,7 @@ export default function App() {
       return <CenteredMessage title="Loading reports…" onBack={() => navigate('/')} />
     }
     if (reportSel === null) {
-      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} stakes={stakes} stake={stakeFilter} onStake={setStakeFilter} openSize={openSize} threebetSize={threebetSize} onOpenSize={setOpenSize} onThreebetSize={setThreebetSize} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
+      return <ReportsMenu grid={reportGrid} kind={kind} onKind={setKind} game={game} onGame={setGame} monthFrom={monthFrom} monthTo={monthTo} onMonths={setMonths} stakes={stakes} stake={stakeFilter} onStake={setStakeFilter} site={site} onSite={setSite} openSize={openSize} threebetSize={threebetSize} onOpenSize={setOpenSize} onThreebetSize={setThreebetSize} subject={subject} title={title} onOpen={sel => navigate(reportUrl(sel, base))} onBack={() => navigate('/')} />
     }
     // NLHE: a 13×13 frequency grid built from the aggregate grid (no EV, no pool fetch).
     if (game === 'nlhe') {
@@ -467,7 +478,7 @@ export default function App() {
           noteAnchor={reportAnchor(game, kind, subject, reportSel)}
           onBack={() => navigate(base)}
           onOpenCell={async combo => {
-            const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo, stakeFilter || undefined)
+            const { hands, notes } = await fetchReportHands(reportSel, subject, kind, monthRange(monthFrom, monthTo), 'nlhe', combo, stakeFilter || undefined, site)
             if (hands.length) setDrill({ hands, notes, index: 0 })
           }}
         />
@@ -534,7 +545,7 @@ export default function App() {
   // ---- PokerNow profiles (per-account player roster) ----
   if (view === 'profiles') {
     const idM = path.match(/^\/profiles\/(\d+)/)
-    if (idM) return <ProfileDetailView id={Number(idM[1])} onBack={() => navigate('/profiles')} />
+    if (idM) return <ProfileDetailView id={Number(idM[1])} onBack={() => navigate('/profiles')} onOpen={id => navigate(`/profiles/${id}`)} />
     return <ProfilesView onBack={() => navigate('/')} onOpen={id => navigate(`/profiles/${id}`)} />
   }
 
@@ -568,6 +579,8 @@ export default function App() {
           monthFrom={monthFrom}
           monthTo={monthTo}
           onMonths={setMonths}
+          site={site}
+          onSite={setSite}
           onOpen={(formationId, nodeId) => navigate(`/postflop/${formationId}/${nodeId}${window.location.search}`)}
           onBack={() => navigate('/')}
         />
@@ -580,6 +593,7 @@ export default function App() {
         game={game}
         monthFrom={monthFrom}
         monthTo={monthTo}
+        site={site}
         onOpenHands={(hands, index) => setDrill({ hands, notes: hands.map(() => ''), index })}
         onBack={() => navigate(`/postflop${window.location.search}`)}
       />

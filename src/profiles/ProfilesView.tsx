@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { fetchProfiles, renameProfile, deleteProfile, type Profile } from '../shared/api/profilesApi'
-
-const fmt = (n: number, dp = 1) => (n >= 0 ? '+' : '') + n.toFixed(dp)
-const tone = (n: number) => (n >= 0 ? 'text-green-400' : 'text-red-400')
+import { fetchProfiles, deleteProfile, type Profile } from '../shared/api/profilesApi'
+import { renameOrMerge } from './renameOrMerge'
+import { fmtNet, netTone } from '../shared/ui/net'
 
 // Per-account PokerNow player roster — the people you've tagged, with your data
 // on each (hands played together and your net vs them). Profiles are created by
@@ -22,7 +21,7 @@ export default function ProfilesView({ onBack, onOpen }: { onBack: () => void; o
   const saveRename = async (id: number) => {
     const name = draft.trim()
     setEditing(null)
-    if (name) { await renameProfile(id, name); load() }
+    if (name) { await renameOrMerge(id, name); load() }
   }
   const remove = async (p: Profile) => {
     if (!confirm(`Delete profile "${p.name}"? Its hands stay, but lose this tag.`)) return
@@ -79,7 +78,7 @@ export default function ProfilesView({ onBack, onOpen }: { onBack: () => void; o
                     )}
                   </td>
                   <td className="py-2 pr-4 text-right text-gray-300">{p.hands}</td>
-                  <td className={`py-2 pr-4 text-right ${tone(p.netBb)}`}>{fmt(p.netBb)}</td>
+                  <td className={`py-2 pr-4 text-right ${netTone(p.netBb)}`}>{fmtNet(p.netBb)}</td>
                   <td className="py-2 text-right">
                     {!p.isHero && <button onClick={() => remove(p)} className="text-xs text-gray-600 hover:text-red-400" title="delete profile">✕</button>}
                   </td>

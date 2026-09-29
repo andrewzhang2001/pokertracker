@@ -6,10 +6,11 @@ import { tableKind } from '../shared/poker/positionUtils'
 import { gameKind, GAMES } from '../shared/poker/games'
 import type { ParsedHand } from '../shared/poker/types'
 import HandReplayer from '../shared/replayer/HandReplayer'
+import ProfileHands from './ProfileHands'
+import IdentityPanel from './IdentityPanel'
+import { fmtNet, netTone } from '../shared/ui/net'
 
 const fmtPct = (r: Rate) => (r.opp ? `${Math.round(pct(r))}%` : '—')
-const fmtNet = (n: number) => (n >= 0 ? '+' : '') + n.toFixed(1)
-const tone = (n: number) => (n >= 0 ? 'text-green-400' : 'text-red-400')
 
 // A profile's hands split into game-type categories — PLO vs NLHE × heads-up vs
 // full ring — so a person's HU and full-ring reads never blur together. Non-HU
@@ -21,25 +22,32 @@ function category(hand: ParsedHand): { key: string; label: string } {
   return { key: `${g}:${hu ? 'hu' : 'fr'}`, label: `${GAMES[g].label} (${hu ? 'heads-up' : 'full ring'})` }
 }
 
-export default function ProfileDetailView({ id, onBack }: { id: number; onBack: () => void }) {
-  const [profile, setProfile] = useState<Profile | null>(null)
+export default function ProfileDetailView({ id, onBack, onOpen }: { id: number; onBack: () => void; onOpen: (id: number) => void }) {
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  // Bumped after an identity change that keeps this profile, to refetch it.
+  const [version, setVersion] = useState(0)
+  const profile = profiles.find(p => p.id === id) ?? null
   const [hands, setHands] = useState<{ hand: ParsedHand; seat: number }[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [cat, setCat] = useState<string | null>(null)
-  // Reviewing = the hand replayer takes over, browsing this profile's hands in
-  // the current game category (the same viewer as "View Database"). Notes are
+  // Reviewing = the hand replayer takes over, browsing a list of this profile's
+  // hands from a starting index (the same viewer as "View Database"). Notes are
   // ephemeral here — the profile-hands feed doesn't carry saved notes.
-  const [reviewing, setReviewing] = useState(false)
+  const [review, setReview] = useState<{ hands: ParsedHand[]; start: number } | null>(null)
   const [reviewNotes, setReviewNotes] = useState<string[]>([])
+  const startReview = (list: ParsedHand[], start: number) => { setReviewNotes(list.map(() => '')); setReview({ hands: list, start }) }
 
   useEffect(() => {
     let cancelled = false
     setHands(null); setError(null)
     Promise.all([fetchProfiles(), fetchProfileHands(id)])
-      .then(([ps, hs]) => { if (!cancelled) { setProfile(ps.find(p => p.id === id) ?? null); setHands(hs) } })
+      .then(([ps, hs]) => { if (!cancelled) { setProfiles(ps); setHands(hs) } })
       .catch(e => { if (!cancelled) setError(String((e as Error).message ?? e)) })
     return () => { cancelled = true }
-  }, [id])
+  }, [id, version])
+
+  const showProfile = (showId: number) => (showId === id ? setVersion(v => v + 1) : onOpen(showId))
+  const identityPanel = profile && <IdentityPanel key={`${id}-${version}`} profile={profile} profiles={profiles} onChanged={showProfile} />
 
   // The game-type categories this profile actually has hands in, most-played
   // first; default the view to the biggest one.
@@ -62,15 +70,15 @@ export default function ProfileDetailView({ id, onBack }: { id: number; onBack: 
   const spot = (key: string) => stats.spots.find(s => s.key === key)!
   const rate = (key: string): Rate => { const s = spot(key); return { made: s.raise, opp: s.n } }
 
-  // Hand review: hand off to the shared replayer over this category's hands.
-  if (reviewing) {
+  // Hand review: hand off to the shared replayer.
+  if (review) {
     return (
       <HandReplayer
-        key={`profile-${id}-${cat}-${forCat.length}`}
-        hands={forCat.map(h => h.hand)}
+        hands={review.hands}
+        initialHandIndex={review.start}
         handNotes={reviewNotes}
         onUpdateNote={(idx, value) => setReviewNotes(prev => { const n = [...prev]; n[idx] = value; return n })}
-        onBack={() => setReviewing(false)}
+        onBack={() => setReview(null)}
         backLabel={`← ${profile?.name ?? 'Profile'}`}
       />
     )
@@ -97,12 +105,12 @@ export default function ProfileDetailView({ id, onBack }: { id: number; onBack: 
         )}
         {hands && (
           <span className="text-gray-600 text-xs">
-            {stats.hands} hands · net <span className={tone(net)}>{fmtNet(net)} bb</span>
+            {stats.hands} hands · net <span className={netTone(net)}>{fmtNet(net)} bb</span>
           </span>
         )}
         {hands && stats.hands > 0 && (
           <button
-            onClick={() => { setReviewNotes(forCat.map(() => '')); setReviewing(true) }}
+            onClick={() => startReview(forCat.map(h => h.hand), 0)}
             className="ml-auto text-xs px-3 py-1 rounded-full border border-yellow-600 text-yellow-400 bg-yellow-600/10 hover:bg-yellow-600/20 transition-colors"
             title={`Replay these ${catLabel} hands in the hand viewer`}
           >
@@ -114,51 +122,61 @@ export default function ProfileDetailView({ id, onBack }: { id: number; onBack: 
       {error && <div className="text-red-400 text-sm">Couldn't load: {error}</div>}
       {!hands && !error && <div className="text-gray-500 text-sm">Loading…</div>}
 
-      {hands && stats.hands === 0 && <div className="text-gray-500 text-sm">No {catLabel || 'matching'} hands for this profile.</div>}
+      {hands && stats.hands === 0 && (
+        <>
+          <div className="text-gray-500 text-sm">No {catLabel || 'matching'} hands for this profile.</div>
+          {identityPanel}
+        </>
+      )}
 
       {hands && stats.hands > 0 && (
-        <>
-          <div className="flex flex-wrap gap-3">
-            <Stat label="RFI" r={rate('open')} />
-            <Stat label="3-Bet" r={rate('vsOpen')} />
-            <Stat label="4-Bet" r={rate('vs3bet')} />
-            <Stat label="Flop CBet" r={stats.flopCbet} />
-          </div>
-
-          <PositionPanel rows={stats.byPosition} />
-
-          <div className="max-w-xl w-full">
-            <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Preflop tree</div>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs uppercase tracking-wide text-gray-500 text-left border-b border-gray-800">
-                  <th className="py-1.5 pr-4">Spot</th>
-                  <th className="py-1.5 pr-4 text-right">Spots</th>
-                  <th className="py-1.5 pr-4 text-right">Raise</th>
-                  <th className="py-1.5 pr-4 text-right">Call</th>
-                  <th className="py-1.5 text-right">Fold</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.spots.filter(s => s.n > 0).map(s => (
-                  <tr key={s.key} className="border-b border-gray-900">
-                    <td className="py-1.5 pr-4 text-white font-medium">{s.label}</td>
-                    <td className="py-1.5 pr-4 text-right text-gray-400">{s.n}</td>
-                    <td className="py-1.5 pr-4 text-right text-amber-300" title={`${s.raiseLabel} · ${s.raise}/${s.n}`}>{Math.round((s.raise / s.n) * 100)}%</td>
-                    <td className="py-1.5 pr-4 text-right text-green-300" title={`${s.call}/${s.n}`}>{Math.round((s.call / s.n) * 100)}%</td>
-                    <td className="py-1.5 text-right text-blue-300" title={`${s.fold}/${s.n}`}>{Math.round((s.fold / s.n) * 100)}%</td>
+        <div className="flex flex-col xl:flex-row gap-6 items-start">
+          <div className="shrink-0 max-w-full flex flex-col gap-5">
+            <div className="flex flex-wrap gap-3">
+              <Stat label="RFI" r={rate('open')} />
+              <Stat label="3-Bet" r={rate('vsOpen')} />
+              <Stat label="4-Bet" r={rate('vs3bet')} />
+              <Stat label="Flop CBet" r={stats.flopCbet} />
+            </div>
+  
+            <PositionPanel rows={stats.byPosition} />
+  
+            <div className="max-w-xl w-full">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Preflop tree</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wide text-gray-500 text-left border-b border-gray-800">
+                    <th className="py-1.5 pr-4">Spot</th>
+                    <th className="py-1.5 pr-4 text-right">Spots</th>
+                    <th className="py-1.5 pr-4 text-right">Raise</th>
+                    <th className="py-1.5 pr-4 text-right">Call</th>
+                    <th className="py-1.5 text-right">Fold</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-xs text-gray-600 mt-2">Raise column = <span className="text-amber-300">RFI / 3-bet / 4-bet / 5-bet</span> at each node. Hover for counts.</p>
-          </div>
+                </thead>
+                <tbody>
+                  {stats.spots.filter(s => s.n > 0).map(s => (
+                    <tr key={s.key} className="border-b border-gray-900">
+                      <td className="py-1.5 pr-4 text-white font-medium">{s.label}</td>
+                      <td className="py-1.5 pr-4 text-right text-gray-400">{s.n}</td>
+                      <td className="py-1.5 pr-4 text-right text-amber-300" title={`${s.raiseLabel} · ${s.raise}/${s.n}`}>{Math.round((s.raise / s.n) * 100)}%</td>
+                      <td className="py-1.5 pr-4 text-right text-green-300" title={`${s.call}/${s.n}`}>{Math.round((s.call / s.n) * 100)}%</td>
+                      <td className="py-1.5 text-right text-blue-300" title={`${s.fold}/${s.n}`}>{Math.round((s.fold / s.n) * 100)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-xs text-gray-600 mt-2">Raise column = <span className="text-amber-300">RFI / 3-bet / 4-bet / 5-bet</span> at each node. Hover for counts.</p>
+            </div>
+  
+            <div className="text-xs text-gray-600">
+              VPIP <span className="text-gray-400">{fmtPct(stats.vpip)}</span> · PFR <span className="text-gray-400">{fmtPct(stats.pfr)}</span>
+              <span className="text-gray-700"> (secondary — the position table above is the primary read)</span>
+            </div>
 
-          <div className="text-xs text-gray-600">
-            VPIP <span className="text-gray-400">{fmtPct(stats.vpip)}</span> · PFR <span className="text-gray-400">{fmtPct(stats.pfr)}</span>
-            <span className="text-gray-700"> (secondary — the position table above is the primary read)</span>
+            {identityPanel}
           </div>
-        </>
+          <ProfileHands key={cat} hands={forCat} onExpand={startReview} />
+        </div>
       )}
     </div>
   )

@@ -16,10 +16,14 @@ import type { ParsedCard, ParsedHand, PlayerInfo, HandAction, Street } from '../
 export interface PokerNowSeat {
   seat: number
   sourceName: string   // "name @ token", the identity MapPlayersModal keys on
-  stack: number        // starting stack, before blinds
+  stack: number        // starting stack, before antes and blinds
 }
 
+// Dead money (an ante, or the missing small blind a returning player posts)
+// goes into the pot without counting toward the player's preflop bet. A 'post'
+// is live: it counts toward that bet ('other' = a straddle or missed big blind).
 export type PokerNowEvent =
+  | { kind: 'dead'; seat: number; amount: number; what: 'ante' | 'small blind' }
   | { kind: 'post'; seat: number; amount: number; blind: 'small' | 'big' | 'other' }
   | { kind: 'board'; street: 'flop' | 'turn' | 'river'; cards: ParsedCard[]; label: string }
   | { kind: 'fold' | 'check'; seat: number }
@@ -94,9 +98,16 @@ export function buildHand(hand: PokerNowHand): ParsedHand {
   let street: Street = 'preflop'
   const nameOf = (seat: number) => players.find(p => p.seatNumber === seat)?.position ?? String(seat)
 
-  // 1) Blinds first, then 2) hole cards — so the replayer opens with the blinds
-  // already in the pot (matching the Ignition parser), regardless of where the
-  // hero's cards fell in the source order.
+  // 1) Dead money, then blinds, then 2) hole cards — so the replayer opens with
+  // the forced bets already in the pot (matching the Ignition parser),
+  // regardless of where the hero's cards fell in the source order. Dead money is
+  // emitted as post_ante, which computeHandState puts in the pot without
+  // counting toward the street bet.
+  for (const e of hand.events) {
+    if (e.kind !== 'dead') continue
+    const desc = e.what === 'ante' ? `antes ${bb(e.amount, bigBlind)}` : `posts a dead small blind of ${bb(e.amount, bigBlind)}`
+    actions.push({ type: 'post_ante', seatNumber: e.seat, amount: e.amount, street: 'preflop', desc: `${nameOf(e.seat)} ${desc}` })
+  }
   for (const { seat, amount } of posts) {
     streetBet.set(seat, (streetBet.get(seat) ?? 0) + amount)
     actions.push({ type: 'post_blind', seatNumber: seat, amount, street: 'preflop', desc: `${nameOf(seat)} posts ${bb(amount, bigBlind)}` })
@@ -116,6 +127,7 @@ export function buildHand(hand: PokerNowHand): ParsedHand {
   // 3) The rest of the hand, in order: board cards, bets, wins.
   for (const e of hand.events) {
     switch (e.kind) {
+      case 'dead':
       case 'post':
         break
       case 'board':

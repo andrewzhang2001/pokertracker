@@ -3,7 +3,7 @@ import {
   formationTree, FORMATIONS, nodeLabel, lineLabel, turnLineLabel, lineSeq, parseFilter, writeFilter,
   type FlopSpot, type PostflopFilter, type PostflopMode, type TreeCell, type TreeLine, type FlopActor,
 } from '../shared/poker/postflop'
-import { fetchFlopSpots, fetchFlopCounts, peekFlopSpots, peekFlopCounts } from '../shared/api/handsApi'
+import { fetchFlopSpots, fetchFlopCounts, peekFlopSpots, peekFlopCounts, type SiteFilter } from '../shared/api/handsApi'
 import { postflopAnchor } from '../shared/api/noteAnchor'
 import { fetchNoteAnchors } from '../shared/api/notesApi'
 import type { TableKind } from '../shared/poker/positionUtils'
@@ -11,6 +11,7 @@ import type { GameKind } from '../shared/poker/games'
 import { KindToggle } from '../shared/ui/KindToggle'
 import { GameToggle } from '../shared/ui/GameToggle'
 import { MonthRange, monthRange } from '../shared/ui/MonthRange'
+import { SiteToggle } from '../shared/ui/SiteToggle'
 import { StreetFilters } from './PostflopFilters'
 
 // Mode + board filters + selected formation live in the URL query.
@@ -34,6 +35,8 @@ interface Props {
   monthFrom: string
   monthTo: string
   onMonths: (from: string, to: string) => void
+  site: SiteFilter
+  onSite: (site: SiteFilter) => void
   onOpen: (formationId: string, nodeId: string) => void
   onBack: () => void
 }
@@ -117,7 +120,7 @@ function NodeRow({ label, sub, cells, pfa, onOpen, noted }: {
   )
 }
 
-export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, monthTo, onMonths, onOpen, onBack }: Props) {
+export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, monthTo, onMonths, site, onSite, onOpen, onBack }: Props) {
   const init = readState()
   const formations = FORMATIONS.filter(f => f.kind === kind)
   const [formationId, setFormationId] = useState(init.formationId)
@@ -133,13 +136,13 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
 
   // Only the selected formation's spots are loaded; the tree (texture/line/node/
   // mode) is then computed client-side. Switching formation refetches.
-  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game) ?? [])
-  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game])
+  const [spots, setSpots] = useState<FlopSpot[]>(() => peekFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game, site) ?? [])
+  useEffect(() => { let live = true; fetchFlopSpots(formationId, monthRange(monthFrom, monthTo), mode, game, site).then(s => { if (live) setSpots(s) }).catch(() => {}); return () => { live = false } }, [formationId, monthFrom, monthTo, mode, game, site])
 
   // Per-formation sample counts (the selector bubbles) come from the server under
   // the active board filter + mode + month range.
-  const [counts, setCounts] = useState<Record<string, number>>(() => peekFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game) ?? {})
-  useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo, game])
+  const [counts, setCounts] = useState<Record<string, number>>(() => peekFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game, site) ?? {})
+  useEffect(() => { let live = true; fetchFlopCounts(mode, filter, monthRange(monthFrom, monthTo), game, site).then(c => { if (live) setCounts(c) }).catch(() => {}); return () => { live = false } }, [mode, filter, monthFrom, monthTo, game, site])
 
   // Which nodes the user has notes on — one bulk fetch (postflop notes are keyed
   // by game+formation+node, no mode/filter, so no refetch on those toggles).
@@ -176,6 +179,7 @@ export default function PostflopMenu({ kind, onKind, game, onGame, monthFrom, mo
         <span className="text-white font-semibold">Postflop</span>
         <GameToggle game={game} onChange={onGame} />
         <KindToggle kind={kind} onChange={onKind} />
+        <SiteToggle site={site} onChange={onSite} />
         <MonthRange from={monthFrom} to={monthTo} onChange={onMonths} />
         <div className="flex rounded-full border border-gray-700 overflow-hidden text-xs">
           {(['hero', 'population'] as PostflopMode[]).map(m => (

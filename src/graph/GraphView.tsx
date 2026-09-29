@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { computeGraphFromRows, type GraphRow, type GraphStats } from '../shared/poker/graph'
-import { fetchGraphFromDb, fetchStakes, type StakeInfo } from '../shared/api/handsApi'
+import { fetchGraphFromDb, fetchStakes, type SiteFilter, type StakeInfo } from '../shared/api/handsApi'
 import { StakePicker } from '../shared/ui/StakePicker'
+import { SiteToggle } from '../shared/ui/SiteToggle'
+import { fmtNet, netTone } from '../shared/ui/net'
 
 interface Props {
   onBack: () => void
 }
-
-const fmt = (n: number, dp = 1) => (n >= 0 ? '+' : '') + n.toFixed(dp)
-const tone = (n: number) => (n >= 0 ? 'text-green-400' : 'text-red-400')
 
 function Stat({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
@@ -64,26 +63,27 @@ export default function GraphView({ onBack }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [game, setGame] = useState<GameFilter>('all')
   const [stake, setStake] = useState('')
+  const [site, setSite] = useState<SiteFilter>('')
   const [stakes, setStakes] = useState<StakeInfo[]>([])
 
-  // The stakes YOU'VE played (for the active game), populating the picker. A
+  // The stakes YOU'VE played (for the active game and site), populating the picker. A
   // stake that no longer matches the game filter falls back to "all stakes".
   useEffect(() => {
     let cancelled = false
-    fetchStakes('mine', game === 'all' ? undefined : game)
+    fetchStakes('mine', game === 'all' ? undefined : game, site)
       .then(s => { if (!cancelled) setStakes(s) })
       .catch(() => { if (!cancelled) setStakes([]) })
     return () => { cancelled = true }
-  }, [game])
+  }, [game, site])
 
   useEffect(() => {
     let cancelled = false
     setRows(null); setError(null)
-    fetchGraphFromDb(game === 'all' ? undefined : game, stake || undefined)
+    fetchGraphFromDb(game === 'all' ? undefined : game, stake || undefined, site)
       .then(r => { if (!cancelled) setRows(r) })
       .catch(e => { if (!cancelled) setError(String((e as Error).message ?? e)) })
     return () => { cancelled = true }
-  }, [game, stake])
+  }, [game, stake, site])
 
   const g: GraphStats | null = useMemo(() => (rows ? computeGraphFromRows(rows) : null), [rows])
 
@@ -100,6 +100,7 @@ export default function GraphView({ onBack }: Props) {
             </button>
           ))}
         </div>
+        <SiteToggle site={site} onChange={setSite} />
         <StakePicker stakes={stakes} value={stake} onChange={setStake} />
         {g && <span className="text-gray-600 text-xs">{g.hands} hands · BB won/lost over time</span>}
       </div>
@@ -110,9 +111,9 @@ export default function GraphView({ onBack }: Props) {
       {g && (
         <>
           <div className="flex flex-wrap gap-3">
-            <Stat label="BB / 100" value={fmt(g.bbPer100, 2)} color={tone(g.bbPer100)} sub="actual winrate" />
-            <Stat label="All-in adj BB / 100" value={fmt(g.adjBbPer100, 2)} color={tone(g.adjBbPer100)} sub="all-ins by equity" />
-            <Stat label="Total BB" value={fmt(g.totalNetBB, 1)} color={tone(g.totalNetBB)} sub="won / lost" />
+            <Stat label="BB / 100" value={fmtNet(g.bbPer100, 2)} color={netTone(g.bbPer100)} sub="actual winrate" />
+            <Stat label="All-in adj BB / 100" value={fmtNet(g.adjBbPer100, 2)} color={netTone(g.adjBbPer100)} sub="all-ins by equity" />
+            <Stat label="Total BB" value={fmtNet(g.totalNetBB, 1)} color={netTone(g.totalNetBB)} sub="won / lost" />
             <Stat label="Rake / 100" value={`−${g.rakeBbPer100.toFixed(2)}`} color="text-orange-300" sub={`−${g.totalRakeBB.toFixed(1)} BB total`} />
           </div>
 

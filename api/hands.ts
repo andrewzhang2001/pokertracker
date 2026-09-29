@@ -86,6 +86,9 @@ async function handler(req: Request): Promise<Response> {
       const stakeParam = params.get('stake')
       const [stakeCur, stakeBbStr] = stakeParam ? stakeParam.split(':') : [null, null]
       const stakeBb = stakeBbStr ? Number(stakeBbStr) : null
+      // Optional site filter: 'ignition' | 'pokernow'. null = every site.
+      const siteParam = params.get('site')
+      const site = siteParam === 'ignition' || siteParam === 'pokernow' ? siteParam : null
       // Distinct stakes present — populates the stake picker. One row per big
       // blind. scope=mine restricts to the viewer's own hands (the graph);
       // otherwise the whole pool (reports).
@@ -96,6 +99,7 @@ async function handler(req: Request): Promise<Response> {
           SELECT big_blind, currency, count(*)::int AS n
           FROM hands
           WHERE (${scopeMine}::boolean = false OR owner_id = ${ownerId})
+            AND (${site}::text IS NULL OR site = ${site})
             AND (${game}::text IS NULL
                  OR (${game} = 'nlhe' AND game_type ILIKE '%holdem%')
                  OR (${game} = 'plo'  AND game_type NOT ILIKE '%holdem%'))
@@ -116,6 +120,7 @@ async function handler(req: Request): Promise<Response> {
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
             AND (${stakeBb}::numeric IS NULL OR (h.big_blind = ${stakeBb}::numeric AND h.currency = ${stakeCur}))
+            AND (${site}::text IS NULL OR h.site = ${site})
           GROUP BY COALESCE(s.game, 'plo'), s.table_kind, s.report_type, s.pos_a, s.pos_b, s.multiway, s.combo, s.action, s.size_bucket
         `
         return Response.json({ grid })
@@ -147,6 +152,7 @@ async function handler(req: Request): Promise<Response> {
             AND (${dFrom}::bigint IS NULL OR played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR played_at < ${dTo}::bigint)
             AND (${stakeBb}::numeric IS NULL OR (big_blind = ${stakeBb}::numeric AND currency = ${stakeCur}))
+            AND (${site}::text IS NULL OR site = ${site})
           ORDER BY played_at DESC NULLS LAST, created_at DESC
         `
         return Response.json({ hands: rows })
@@ -167,6 +173,7 @@ async function handler(req: Request): Promise<Response> {
             AND COALESCE(s.game, 'plo') = ${game}
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
+            AND (${site}::text IS NULL OR h.site = ${site})
         ` as { spot: unknown }[]
         return Response.json({ spots: rows.map(r => r.spot) })
       }
@@ -187,6 +194,7 @@ async function handler(req: Request): Promise<Response> {
             AND COALESCE(s.game, 'plo') = ${game}
             AND (${dFrom}::bigint IS NULL OR h.played_at >= ${dFrom}::bigint)
             AND (${dTo}::bigint IS NULL OR h.played_at < ${dTo}::bigint)
+            AND (${site}::text IS NULL OR h.site = ${site})
             AND (${su('suits')}::text   IS NULL OR s.flop_suits  = ${su('suits')} OR (${su('suits')} = 'fd' AND s.flop_suits = 'dfd'))
             AND (${yn('paired')}::boolean IS NULL OR s.flop_paired   = ${yn('paired')})
             AND (${yn('straight')}::boolean IS NULL OR s.flop_straighty = ${yn('straight')})
@@ -225,6 +233,7 @@ async function handler(req: Request): Promise<Response> {
                  OR (${game} = 'nlhe' AND game_type ILIKE '%holdem%')
                  OR (${game} = 'plo'  AND game_type NOT ILIKE '%holdem%'))
             AND (${stakeBb}::numeric IS NULL OR (big_blind = ${stakeBb}::numeric AND currency = ${stakeCur}))
+            AND (${site}::text IS NULL OR site = ${site})
           ORDER BY played_at ASC NULLS LAST, created_at ASC
         `
         return Response.json({ rows })
@@ -242,22 +251,26 @@ async function handler(req: Request): Promise<Response> {
         const vpip = params.get('vpip')
         const want = vpip === 'yes' ? true : vpip === 'no' ? false : null
 
-        // One pass gives both the unfiltered total and each bucket's size, so
-        // the client can render "matching / total" without a second round-trip.
+        // One pass gives the unfiltered total and the size of each filtered
+        // bucket, so the client can render "matching / total" without a second
+        // round-trip.
         const [counts] = await sql`
           SELECT count(*)::int AS total,
-                 count(*) FILTER (WHERE hero_vpip IS TRUE)::int AS vpip_yes
+                 count(*) FILTER (WHERE ${site}::text IS NULL OR site = ${site})::int AS site_total,
+                 count(*) FILTER (WHERE (${site}::text IS NULL OR site = ${site}) AND hero_vpip IS TRUE)::int AS vpip_yes
           FROM hands WHERE owner_id = ${ownerId}
-        ` as { total: number; vpip_yes: number }[]
+        ` as { total: number; site_total: number; vpip_yes: number }[]
         const total = counts?.total ?? 0
+        const siteTotal = counts?.site_total ?? 0
         const vpipYes = counts?.vpip_yes ?? 0
         // NULL hero_vpip counts as "no VPIP", matching the IS TRUE test below.
-        const filtered = want === null ? total : want ? vpipYes : total - vpipYes
+        const filtered = want === null ? siteTotal : want ? vpipYes : siteTotal - vpipYes
 
         const rows = await sql`
           SELECT parsed, raw_text, notes
           FROM hands
           WHERE owner_id = ${ownerId}
+            AND (${site}::text IS NULL OR site = ${site})
             AND (${want}::boolean IS NULL OR (hero_vpip IS TRUE) = ${want}::boolean)
           ORDER BY played_at DESC NULLS LAST, created_at DESC
           LIMIT ${limit} OFFSET ${offset}
