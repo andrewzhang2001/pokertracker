@@ -1,6 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
-import { ensureNotesSchema } from '../db/schema'
+import { ensureNotesSchema } from '../db/schema/index.js'
 
 // Persistent study notes, one per (user, anchor). The anchor is a semantic key
 // for a page — a postflop node, a report, a leakbuster spot — built filter-blind

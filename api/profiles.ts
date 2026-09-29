@@ -1,6 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
-import { ensureProfilesSchema } from '../db/schema'
+import { ensureProfilesSchema } from '../db/schema/index.js'
 
 // Node.js runtime (Fluid Compute) — @clerk/backend needs Node crypto. See
 // api/hands.ts for why the handler is exported via the `fetch` Web Standard shape.

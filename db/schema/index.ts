@@ -7,19 +7,19 @@
 // run on every request; that is how the schema is applied — there is no
 // migration runner.
 
-import { HANDS } from './hands'
-import { PREFLOP_SPOTS } from './preflop-spots'
-import { FLOP_SPOTS } from './flop-spots'
-import { PROFILES } from './profiles'
-import { HAND_PLAYERS } from './hand-players'
-import { NOTES } from './notes'
+import { HANDS } from './hands.js'
+import { PREFLOP_SPOTS } from './preflop-spots.js'
+import { FLOP_SPOTS } from './flop-spots.js'
+import { PROFILES } from './profiles.js'
+import { HAND_PLAYERS } from './hand-players.js'
+import { NOTES } from './notes.js'
 
-export * from './hands'
-export * from './preflop-spots'
-export * from './flop-spots'
-export * from './profiles'
-export * from './hand-players'
-export * from './notes'
+export * from './hands.js'
+export * from './preflop-spots.js'
+export * from './flop-spots.js'
+export * from './profiles.js'
+export * from './hand-players.js'
+export * from './notes.js'
 
 // The subset of the neon client this module needs. `query(text)` sends the
 // statement with an empty parameter list, exactly as a tagged template with no

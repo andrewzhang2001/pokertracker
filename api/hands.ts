@@ -1,6 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import { verifyToken } from '@clerk/backend'
-import { ensureHandsSchema } from '../db/schema'
+import { ensureHandsSchema } from '../db/schema/index.js'
 
 // Node.js runtime (Fluid Compute), not Edge: @clerk/backend pulls in Node crypto
 // the Edge runtime doesn't support. On Node, the Web Request/Response handler
