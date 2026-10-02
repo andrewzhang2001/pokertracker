@@ -89,9 +89,10 @@ function parseRows(text: string): Row[] {
 
 // ---- Hand blocks ----------------------------------------------------------
 
-interface Block { id: string; gameType: string; dealer: string; at: string; lines: string[]; rawLines: string[] }
+interface Block { id: string; gameType: string; dealer: string | undefined; at: string; ended: boolean; lines: string[]; rawLines: string[] }
 
-const START = /^-- starting hand #(\d+) \(id: (\w+)\)\s+(.*?)\s*\(dealer: "([^"]+)"\)/
+// The header ends in (dealer: "name"), or (dead button) when no one holds it.
+const START = /^-- starting hand #(\d+) \(id: (\w+)\)\s+(.*?)\s*\((?:dealer: "([^"]+)"|dead button)\)/
 const END = /^-- ending hand #(\d+)/
 
 function splitBlocks(rows: Row[]): Block[] {
@@ -101,7 +102,7 @@ function splitBlocks(rows: Row[]): Block[] {
     const s = r.entry.match(START)
     if (s) {
       if (cur) blocks.push(cur)
-      cur = { id: s[2], gameType: normalizeGameType(s[3]), dealer: s[4], at: r.at, lines: [], rawLines: [r.raw] }
+      cur = { id: s[2], gameType: normalizeGameType(s[3]), dealer: s[4], at: r.at, ended: false, lines: [], rawLines: [r.raw] }
       continue
     }
     // Don't close on the end marker — PokerNow logs voluntary post-fold shows
@@ -111,11 +112,13 @@ function splitBlocks(rows: Row[]): Block[] {
     // `lines` is just the action entries the parser walks.
     if (cur) {
       cur.rawLines.push(r.raw)
-      if (!END.test(r.entry)) cur.lines.push(r.entry)
+      if (END.test(r.entry)) cur.ended = true
+      else cur.lines.push(r.entry)
     }
   }
   if (cur) blocks.push(cur)
-  return blocks
+  // A hand still in progress when the log was exported has no end marker.
+  return blocks.filter(b => b.ended)
 }
 
 // ---- Hero detection -------------------------------------------------------
@@ -159,7 +162,7 @@ function detectHero(blocks: Block[]): string | null {
 
 const STACKS = /^Player stacks: (.+)$/
 const SEAT = /#(\d+) "([^"]+)" \(([\d.,]+)\)/g
-const POST = /^"([^"]+)"\s+posts a (small blind|big blind|straddle|missing small blind|missed big blind) of ([\d.,]+)/
+const POST = /^"([^"]+)"\s+posts an? (ante|small blind|big blind|straddle|missing small blind|missed big blind) of ([\d.,]+)/
 const ACTION = /^"([^"]+)"\s+(.+)$/
 const UNCALLED = /^Uncalled bet of ([\d.,]+) returned to "([^"]+)"/
 const BOARD: ['flop' | 'turn' | 'river', RegExp][] = [
@@ -177,6 +180,7 @@ function lineEvent(line: string, nameToSeat: Map<string, number>): PokerNowEvent
     const seat = nameToSeat.get(pm[1])
     if (seat === undefined) return null
     const amount = parseAmt(pm[3])
+    if (pm[2] === 'ante') return { kind: 'dead', seat, amount, what: 'ante' }
     if (pm[2] === 'missing small blind') return { kind: 'dead', seat, amount, what: 'small blind' }
     return { kind: 'post', seat, amount, blind: BLIND_KIND[pm[2]] ?? 'other' }
   }
@@ -234,7 +238,7 @@ function readHand(block: Block, heroName: string | null): PokerNowHand | null {
     gameType: block.gameType,
     at: block.at,
     seats,
-    dealerSeat: nameToSeat.get(block.dealer),
+    dealerSeat: block.dealer === undefined ? undefined : nameToSeat.get(block.dealer),
     heroSeat,
     heroCards: yourHand ? parseCards(yourHand[1]) : undefined,
     shown,
