@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ParsedHand } from '../shared/poker/types'
-import { fetchProfiles, lookupIdentities, type Profile } from '../shared/api/profilesApi'
+import { fetchProfiles, lookupIdentities, type KnownIdentities, type Profile } from '../shared/api/profilesApi'
 import { netForSeat } from '../shared/poker/graph'
 
 // One distinct raw site identity across the import, plus the per-hand seat links
@@ -67,12 +67,14 @@ export default function MapPlayersModal({ identities, initial, confirmLabel = 'S
 }) {
   const [profiles, setProfiles] = useState<Profile[] | null>(null)
   const [assign, setAssign] = useState<Record<string, Assign>>({})
+  // Identities preselected because their token matches a profile's identity.
+  const [tokenMatched, setTokenMatched] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    const noneKnown = new Map<string, { profileId: number; anonymous: boolean }>()
+    const noneKnown: KnownIdentities = { byRawName: new Map(), byToken: new Map() }
     Promise.all([
       fetchProfiles(),
-      lookupIdentities(identities.map(i => i.rawName)).catch(() => noneKnown),
+      lookupIdentities(identities.map(i => i.rawName), identities.map(i => i.token)).catch(() => noneKnown),
     ]).then(([ps, known]) => {
       // Anonymous profiles hold only their own identity, so they're never offered
       // as a destination.
@@ -80,19 +82,27 @@ export default function MapPlayersModal({ identities, initial, confirmLabel = 'S
       const hero = ps.find(p => p.isHero)
       const prior = new Map((initial ?? []).map(a => [a.rawName, a]))
       // Default, first match wins: a prior saved assignment; the named profile
-      // this identity already belongs to; for your seat, your self profile (or a
+      // this identity already belongs to; the named profile holding the same
+      // token under another display name; for your seat, your self profile (or a
       // new one named after your handle); everyone else → anonymous (the "don't
       // care" path), still one click to change.
       const init: Record<string, Assign> = {}
+      const viaToken = new Set<string>()
       for (const id of identities) {
         const p = prior.get(id.rawName)
-        const owner = known.get(id.rawName)
+        const owner = known.byRawName.get(id.rawName)
+        const tokenOwner = known.byToken.get(id.token)
         if (p) init[id.rawName] = fromAssignment(p)
         else if (owner && !owner.anonymous) init[id.rawName] = { kind: 'existing', existingId: owner.profileId }
+        else if (tokenOwner !== undefined) {
+          init[id.rawName] = { kind: 'existing', existingId: tokenOwner }
+          viaToken.add(id.rawName)
+        }
         else if (id.isHero) init[id.rawName] = hero ? { kind: 'existing', existingId: hero.id } : { kind: 'new', newName: id.displayName }
         else init[id.rawName] = { kind: 'anon' }
       }
       setAssign(init)
+      setTokenMatched(viaToken)
     }).catch(() => setProfiles([]))
   }, [identities, initial])
 
@@ -139,6 +149,7 @@ export default function MapPlayersModal({ identities, initial, confirmLabel = 'S
                       <span className="text-white font-medium">{id.displayName}</span>
                       {id.ambiguous && <span className="ml-1.5 text-[11px] text-gray-500 font-mono">…{id.token.slice(-6)}</span>}
                       {id.isHero && <span className="ml-2 text-[10px] uppercase tracking-wide text-yellow-400 border border-yellow-500/40 rounded px-1">you</span>}
+                      {tokenMatched.has(id.rawName) && <span className="ml-2 text-[11px] text-gray-500">matched by tag …{id.token.slice(-6)}</span>}
                     </div>
                     <select
                       value={a.kind === 'existing' ? `p:${a.existingId}` : a.kind}

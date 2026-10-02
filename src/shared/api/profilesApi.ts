@@ -109,11 +109,25 @@ export async function moveIdentity(rawName: string, target: MoveTarget): Promise
   return Number(r.profileId)
 }
 
-// The profile each already-imported identity belongs to, for preselecting the
-// map step.
-export async function lookupIdentities(rawNames: string[]): Promise<Map<string, { profileId: number; anonymous: boolean }>> {
-  const r = await post<{ known: { raw_name: string; profile_id: number; anonymous: boolean }[] }>({ op: 'lookup', rawNames })
-  return new Map(r.known.map(k => [k.raw_name, { profileId: Number(k.profile_id), anonymous: !!k.anonymous }]))
+export interface KnownIdentities {
+  byRawName: Map<string, { profileId: number; anonymous: boolean }>
+  byToken: Map<string, number>   // PokerNow token → the named profile with the most seats under it
+}
+
+// The profile each already-imported identity belongs to, and the named profile
+// each PokerNow token belongs to, for preselecting the map step.
+export async function lookupIdentities(rawNames: string[], tokens: string[]): Promise<KnownIdentities> {
+  const r = await post<{
+    known: { raw_name: string; profile_id: number; anonymous: boolean }[]
+    byToken: { token: string; profile_id: number }[]
+  }>({ op: 'lookup', rawNames, tokens })
+  const byToken = new Map<string, number>()
+  // Rows arrive most seats first; keep the first profile per token.
+  for (const t of r.byToken) if (!byToken.has(t.token)) byToken.set(t.token, Number(t.profile_id))
+  return {
+    byRawName: new Map(r.known.map(k => [k.raw_name, { profileId: Number(k.profile_id), anonymous: !!k.anonymous }])),
+    byToken,
+  }
 }
 
 export async function deleteProfile(id: number): Promise<void> {

@@ -196,16 +196,26 @@ async function handler(req: Request): Promise<Response> {
       }
 
       // The profile each identity currently belongs to, for preselecting the
-      // import map step.
+      // import map step. byToken lists the named profiles holding any identity
+      // with the same PokerNow token (the part after " @ "), most seats first.
       if (op === 'lookup') {
         const rawNames = ((body.rawNames as string[] | undefined) ?? []).map(String)
-        if (!rawNames.length) return Response.json({ known: [] })
-        const rows = await sql`
+        const tokens = ((body.tokens as string[] | undefined) ?? []).map(String).filter(Boolean)
+        const known = rawNames.length ? await sql`
           SELECT DISTINCT hp.raw_name, hp.profile_id, p.anonymous
           FROM hand_players hp JOIN profiles p ON p.id = hp.profile_id
           WHERE hp.owner_id = ${ownerId} AND hp.raw_name = ANY(${rawNames}::text[])
-        `
-        return Response.json({ known: rows })
+        ` : []
+        const byToken = tokens.length ? await sql`
+          SELECT t.token, hp.profile_id, count(*)::int AS seats
+          FROM hand_players hp
+          JOIN profiles p ON p.id = hp.profile_id
+          CROSS JOIN LATERAL (SELECT substring(hp.raw_name from ' @ ([^ ]+)$') AS token) t
+          WHERE hp.owner_id = ${ownerId} AND NOT p.anonymous AND t.token = ANY(${tokens}::text[])
+          GROUP BY t.token, hp.profile_id
+          ORDER BY seats DESC
+        ` : []
+        return Response.json({ known, byToken })
       }
 
       if (op === 'delete') {
